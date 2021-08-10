@@ -288,13 +288,13 @@ def main(args):
                     log.JsonBackend(os.path.join(args.workspace, args.raport_file), log_level=1),
                     log.StdOut1LBackend(train_loader_len, val_loader_len, args.epochs, log_level=0),
                 ]
-        try:
-            import wandb
-            wandb.init(project="actnn", config=args, name=args.workspace)
-            logger_backends.append(log.WandbBackend(wandb))
-            print('Logging to wandb...')
-        except ImportError:
-            print('Wandb not found, logging to stdout and json...')
+        # try:
+        #     import wandb
+        #     wandb.init(project="actnn", config=args, name=args.workspace)
+        #     logger_backends.append(log.WandbBackend(wandb))
+        #     print('Logging to wandb...')
+        # except ImportError:
+        #     print('Wandb not found, logging to stdout and json...')
 
         logger = log.Logger(args.print_freq, logger_backends)
 

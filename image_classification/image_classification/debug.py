@@ -1,3 +1,4 @@
+import torch
 from actnn import config, QScheme, QBNScheme
 from .utils import *
 import matplotlib
@@ -215,3 +216,75 @@ def get_var_during_training(model_and_loss, optimizer, val_loader, num_batches=2
 
     print('Overall Var = {}'.format(all_qg))
 
+
+def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
+    num_samples = 3
+    config.activation_compression_bits = [4]
+    config.adaptive_conv_scheme = config.adaptive_bn_scheme = False
+
+    model_and_loss.train()
+    if hasattr(model_and_loss.model, 'module'):
+        m = model_and_loss.model.module
+    else:
+        m = model_and_loss.model
+
+    m.set_name()
+    weight_names = [layer.layer_name for layer in m.model.linear_layers]
+
+    print('=======')
+    print(m.model.linear_layers[0].scheme.scales)
+    print('=======')
+
+    def bp(input, target):
+        optimizer.zero_grad()
+        loss, output = model_and_loss(input, target)
+        loss.backward()
+        torch.cuda.synchronize()
+        grad = [layer.weight.grad.ravel().detach().cpu() for layer in m.model.linear_layers]
+        return torch.cat(grad, 0)
+
+    QScheme.update_scale = False
+    data_iter = enumerate(val_loader)
+
+    total_var = None
+    cnt = 0
+    mean_grad = 0
+    second_momentum = 0
+    inputs = []
+    targets = []
+    config.compress_activation = False
+    # Compute Sample Var
+    for i, (input, target, _) in tqdm(data_iter):
+        cnt += 1
+        if cnt == num_batches:
+            break
+
+        inputs.append(input.clone().cpu())
+        targets.append(target.clone().cpu())
+
+        grad = bp(input, target)
+        mean_grad = mean_grad + grad
+        second_momentum = second_momentum + torch.square(grad)
+
+    num_batches = cnt
+    mean_grad = mean_grad / num_batches
+    sample_var = second_momentum / cnt - torch.square(mean_grad)
+
+    # Compute Quant Var
+    quant_var = 0
+    overall_var = 0
+    for input, target in zip(inputs, targets):
+        input = input.cuda()
+        target = target.cuda()
+
+        config.compress_activation = False
+        exact_grad = bp(input, target)
+        config.compress_activation = True
+        for iter in range(num_samples):
+            grad = bp(input, target)
+            quant_var = quant_var + (exact_grad - grad) ** 2
+            overall_var = overall_var + (grad - mean_grad) ** 2
+
+    quant_var /= (num_batches * num_samples)
+    overall_var /= (num_batches * num_samples)
+    print('Sample Var = {}, quant_var = {}, Overall_var = {}'.format(sample_var.sum(), quant_var.sum(), overall_var.sum()))

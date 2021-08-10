@@ -99,3 +99,5 @@ class QModule(nn.Module):
         ret = OrderedDict([(k[6:], v) for k, v in ret.items()])
         return ret
 
+    def set_name(self):
+        return self.model.set_name()

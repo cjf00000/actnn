@@ -7,7 +7,7 @@ from torch.autograd import Variable
 from . import logger as log
 from . import resnet as models
 from . import utils
-from .debug import get_var, get_var_during_training
+from .debug import get_var, get_var_during_training, get_var_black_box
 from actnn import config, QScheme, QModule, get_memory_usage, compute_tensor_bytes, exp_recorder
 from copy import copy
 
@@ -444,4 +444,5 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
         #     logger.end()
 
     if skip_training and skip_validation:
-        get_var(model_and_loss, optimizer, train_loader, 10, model_state)
+        # get_var(model_and_loss, optimizer, train_loader, 10, model_state)
+        get_var_black_box(model_and_loss, optimizer, train_loader, 10)
