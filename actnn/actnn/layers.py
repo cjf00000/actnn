@@ -366,6 +366,7 @@ class QReLU(nn.Module):
         super().__init__()
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        self.scheme.rank = len(input.shape)
         self.scheme.dim = input.numel() // input.shape[0]
         return ext_quantization.act_quantized_relu(input)
 

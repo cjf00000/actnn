@@ -233,18 +233,6 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     else:
         m = model_and_loss.model
 
-    # m.set_name()
-    weight_names = []
-    schemes = []
-    # m.set_name()
-    for name, module in m.model.named_modules():
-        if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
-            schemes.append(module.scheme)
-            weight_names.append(name)
-
-    print(weight_names)
-    L = len(weight_names)
-
     def bp(input, target):
         optimizer.zero_grad()
         loss, output = model_and_loss(input, target)
@@ -286,14 +274,32 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     sample_var = sample_var.sum()
 
     # Gather samples
-    num_var_samples = 1
+    config.compress_activation = True
+    bp(inputs[0].cuda(), targets[0].cuda())  # Get dim
+    scheme_info = {}
+    for name, module in m.model.named_modules():
+        if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
+            id = str(type(module)) + str(module.scheme.rank)
+            if not id in scheme_info:
+                scheme_info[id] = {'dim': 0, 'schemes': []}
+
+            info = scheme_info[id]
+            info['dim'] += module.scheme.dim
+            info['schemes'].append(module.scheme)
+
+    weight_names = list(scheme_info.keys())
+    weight_names.sort()
+
+    w = torch.tensor([scheme_info[w]['dim'] for w in weight_names], dtype=torch.int32)
+    schemes = [scheme_info[w]['schemes'] for w in weight_names]
+
+    print(weight_names)
+    L = len(weight_names)
+
+    num_var_samples = 10
     # Linear regression
     X = []
     y = []
-
-    config.compress_activation = True
-    bp(inputs[0].cuda(), targets[0].cuda())   # Get dim
-    w = torch.tensor([scheme.dim for scheme in schemes], dtype=torch.int)
     total_bits = w.sum() * 2
 
     def get_bits(C):
@@ -301,12 +307,13 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
         b = ext_calc_precision.calc_precision(b, C, w, total_bits)
 
         for i in range(L):
-            schemes[i].bits = b[i]
+            for scheme in schemes[i]:
+                scheme.bits = b[i]
 
         return b
 
-    def add_data():
-        X_row = [2 ** (-2.0 * scheme.bits) for scheme in schemes]
+    def add_data(b):
+        X_row = [2 ** (-2.0 * bits) for bits in b]
 
         idx = np.random.randint(0, num_batches-1)
         input, target = inputs[idx].cuda(), targets[idx].cuda()
@@ -323,11 +330,7 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
 
         C = (2 * (torch.rand([L]) - 0.5)).exp()
         b = get_bits(C)
-        # print(b)
-        add_data()
-
-        for scheme in schemes:
-            scheme.bits = 2
+        add_data(b)
 
     X = torch.tensor(X, dtype=torch.float32)
     y = torch.tensor(y, dtype=torch.float32) - sample_var

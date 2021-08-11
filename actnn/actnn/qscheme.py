@@ -89,6 +89,7 @@ class QScheme(object):
         # b = ext_calc_precision.calc_precision(b, C, w, int(self.bits * N))         # N
 
         self.C = C
+        self.rank = len(input.shape)
         self.dim = input.numel() // N
         self.b = b
 
