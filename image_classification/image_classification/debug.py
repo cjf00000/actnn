@@ -331,7 +331,7 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
         X.append(X_row)
         y.append(var)
 
-    for iter in range(L * num_var_samples * num_batches):
+    for iter in range(L * num_var_samples):
         if iter % 100 == 0:
             print(iter)
 
@@ -345,11 +345,32 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
 
     # Do Ridge regression...
     from sklearn.linear_model import Ridge
-    clf = Ridge(alpha=0.01 * num_batches * num_var_samples, fit_intercept=False)
-    clf.fit(X.numpy(), y.numpy())
-    print(clf.coef_)
+    # Bagging
+    num_bagging_samples = 5
 
-    weights = torch.tensor(clf.coef_, dtype=torch.float32).abs()    # TODO: replace this abs with bagging
+    data_size = X.shape[0]
+    coefs = []
+    for i in range(num_bagging_samples):
+        clf = Ridge(alpha=0.01 * num_batches * num_var_samples, fit_intercept=False)
+        idx = torch.randint(data_size, [data_size])
+        X_sample = X[idx]
+        y_sample = y[idx]
+        clf.fit(X_sample.numpy(), y_sample.numpy())
+        coefs.append(clf.coef_)
+
+    coefs = np.stack(coefs)
+    mean_coef = np.mean(coefs, 0)
+    std_coef = np.std(coefs, 0)
+    print(mean_coef)
+    print(std_coef)
+
+    coef = mean_coef + std_coef
+    min_coef = np.min(coef)
+    if min_coef < 0:
+        coef = coef - min_coef + 1e-8
+    print(coef)
+
+    weights = torch.tensor(coef, dtype=torch.float32).abs()    # TODO: replace this abs with bagging
     C = torch.zeros(L)
     for l in range(L0):
         for scheme in schemes[l]:
