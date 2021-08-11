@@ -277,26 +277,30 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     config.compress_activation = True
     bp(inputs[0].cuda(), targets[0].cuda())  # Get dim
     scheme_info = {}
+    all_schemes = []
+    layer_names = []
     for name, module in m.model.named_modules():
         if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
             id = str(type(module)) + str(module.scheme.rank)
             if not id in scheme_info:
-                scheme_info[id] = {'dim': 0, 'schemes': []}
+                scheme_info[id] = []
 
             info = scheme_info[id]
-            info['dim'] += module.scheme.dim
-            info['schemes'].append(module.scheme)
+            info.append(module.scheme)
+            all_schemes.append(module.scheme)
+            layer_names.append(name)
 
     weight_names = list(scheme_info.keys())
     weight_names.sort()
 
-    w = torch.tensor([scheme_info[w]['dim'] for w in weight_names], dtype=torch.int32)
-    schemes = [scheme_info[w]['schemes'] for w in weight_names]
+    w = torch.tensor([scheme.dim for scheme in all_schemes], dtype=torch.int32)
+    schemes = [scheme_info[w] for w in weight_names]
 
     print(weight_names)
-    L = len(weight_names)
+    L = len(all_schemes)
+    L0 = len(weight_names)
 
-    num_var_samples = 10
+    num_var_samples = 1
     # Linear regression
     X = []
     y = []
@@ -307,13 +311,16 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
         b = ext_calc_precision.calc_precision(b, C, w, total_bits)
 
         for i in range(L):
-            for scheme in schemes[i]:
-                scheme.bits = b[i]
+            all_schemes[i].bits = b[i]
 
         return b
 
-    def add_data(b):
-        X_row = [2 ** (-2.0 * bits) for bits in b]
+    def add_data():
+        X_row = [0 for i in range(L0)]
+        for l in range(L0):
+            for scheme in schemes[l]:
+                bits = scheme.bits
+                X_row[l] += 2 ** (-2.0 * bits)
 
         idx = np.random.randint(0, num_batches-1)
         input, target = inputs[idx].cuda(), targets[idx].cuda()
@@ -330,11 +337,11 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
 
         C = (2 * (torch.rand([L]) - 0.5)).exp()
         b = get_bits(C)
-        add_data(b)
+        add_data()
 
     X = torch.tensor(X, dtype=torch.float32)
     y = torch.tensor(y, dtype=torch.float32) - sample_var
-    print(y)
+    #print(y)
 
     # Do Ridge regression...
     from sklearn.linear_model import Ridge
@@ -342,17 +349,18 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     clf.fit(X.numpy(), y.numpy())
     print(clf.coef_)
 
-    weights = torch.tensor(clf.coef_, dtype=torch.float32)
-    # for i in range(X.shape[0]):
-    #     pred = (X[i] * weights).sum()
-    #     if i > 0:
-    #         print(weight_names[i-1], y[i], pred, (pred - y[i])**2) #, X[i])
+    weights = torch.tensor(clf.coef_, dtype=torch.float32).abs()    # TODO: replace this abs with bagging
+    C = torch.zeros(L)
+    for l in range(L0):
+        for scheme in schemes[l]:
+            scheme.coef = weights[l]
 
-    C = weights.abs()
-    print(C)
+    for l in range(L):
+        C[l] = all_schemes[l].coef
+
     b = get_bits(C)
     for l in range(L):
-        print(weight_names[l], b[l])
+        print(layer_names[l], C[l], b[l])
 
     # Compute Quant Var
     quant_var = 0
