@@ -277,7 +277,7 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     sample_var = sample_var.sum()
 
     # Gather samples
-    num_var_samples = 3
+    num_var_samples = 1
     # Linear regression
     X = []
     y = []
@@ -287,17 +287,15 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     def add_data():
         X_row = [2 ** (-2 * layer.scheme.bits) for layer in m.model.linear_layers]
 
-        total_var = 0
         for s in range(num_var_samples):
             for input, target in zip(inputs, targets):
                 input = input.cuda()
                 target = target.cuda()
                 grad = bp(input, target)
                 var = ((grad - mean_grad) ** 2).sum()
-                total_var += var        # TODO: this reduction is not necessary?
 
-        X.append(X_row)
-        y.append(total_var / 10 / num_var_samples)
+                X.append(X_row)
+                y.append(var)
 
     add_data()
     for layer in m.model.linear_layers:
@@ -326,15 +324,15 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     #     optim.zero_grad()
 
     from sklearn.linear_model import Ridge
-    clf = Ridge(alpha=0.01, fit_intercept=False)
+    clf = Ridge(alpha=0.01 * num_batches * num_var_samples, fit_intercept=False)
     clf.fit(X.numpy(), y.numpy())
     print(clf.coef_)
 
     weights = torch.tensor(clf.coef_, dtype=torch.float32)
-    for i in range(X.shape[0]):
-        pred = (X[i] * weights).sum()
-        if i > 0:
-            print(weight_names[i-1], y[i], pred, (pred - y[i])**2) #, X[i])
+    # for i in range(X.shape[0]):
+    #     pred = (X[i] * weights).sum()
+    #     if i > 0:
+    #         print(weight_names[i-1], y[i], pred, (pred - y[i])**2) #, X[i])
 
     C = weights.abs()
     print(C)
