@@ -83,9 +83,10 @@ class QScheme(object):
         grad_sum = self.get_scale().cuda()
         C = (self.num_locations / 4 / self.depthwise_groups * Range_sqr * grad_sum)\
             .to(torch.float32).cpu()
-        b = torch.ones(N, dtype=torch.int32) * self.initial_bits
-        w = torch.ones(N, dtype=torch.int32)
-        b = ext_calc_precision.calc_precision(b, C, w, int(self.bits * N))         # N
+
+        b = torch.ones(N, dtype=torch.int32) * self.bits
+        # w = torch.ones(N, dtype=torch.int32)
+        # b = ext_calc_precision.calc_precision(b, C, w, int(self.bits * N))         # N
 
         self.C = C
         self.dim = input.numel() // N

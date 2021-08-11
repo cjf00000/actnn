@@ -45,9 +45,9 @@ class QBNScheme(QScheme):
 
         # greedy
         C = Range_sqr.to(torch.float32).cpu()
-        b = torch.ones(N, dtype=torch.int32) * self.initial_bits
-        w = torch.ones(N, dtype=torch.int32)
-        b = ext_calc_precision.calc_precision(b, C, w, int(self.bits * N))
+        b = torch.ones(N, dtype=torch.int32) * self.bits
+        # w = torch.ones(N, dtype=torch.int32)
+        # b = ext_calc_precision.calc_precision(b, C, w, int(self.bits * N))
 
         return input_groups.view(N, -1, config.group_size), b.cuda(), mn.view(N, -1, 1), mx.view(N, -1, 1)
 

@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from actnn import config, QScheme, QBNScheme
 from .utils import *
 import matplotlib
@@ -9,6 +10,9 @@ import numpy as np
 import pickle
 from matplotlib.colors import LogNorm
 from copy import deepcopy
+import actnn
+import actnn.cpp_extension.calc_precision as ext_calc_precision
+
 
 
 def get_var(model_and_loss, optimizer, val_loader, num_batches=20, model_state=None):
@@ -219,8 +223,9 @@ def get_var_during_training(model_and_loss, optimizer, val_loader, num_batches=2
 
 def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     num_samples = 3
-    config.activation_compression_bits = [4]
-    config.adaptive_conv_scheme = config.adaptive_bn_scheme = False
+    config.activation_compression_bits = [2]
+    config.initial_bits = 2
+    config.perlayer = False
 
     model_and_loss.train()
     if hasattr(model_and_loss.model, 'module'):
@@ -269,6 +274,79 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     num_batches = cnt
     mean_grad = mean_grad / num_batches
     sample_var = second_momentum / cnt - torch.square(mean_grad)
+    sample_var = sample_var.sum()
+
+    # Gather samples
+    num_var_samples = 3
+    # Linear regression
+    X = []
+    y = []
+
+    config.compress_activation = True
+
+    def add_data():
+        X_row = [2 ** (-2 * layer.scheme.bits) for layer in m.model.linear_layers]
+
+        total_var = 0
+        for s in range(num_var_samples):
+            for input, target in zip(inputs, targets):
+                input = input.cuda()
+                target = target.cuda()
+                grad = bp(input, target)
+                var = ((grad - mean_grad) ** 2).sum()
+                total_var += var        # TODO: this reduction is not necessary?
+
+        X.append(X_row)
+        y.append(total_var / 10 / num_var_samples)
+
+    add_data()
+    for layer in m.model.linear_layers:
+        print(layer)
+        layer.scheme.bits = 8
+        add_data()
+        layer.scheme.bits = 2
+
+    X = torch.tensor(X, dtype=torch.float32)
+    y = torch.tensor(y, dtype=torch.float32) - sample_var
+
+    # Do Ridge regression...
+    L = len(m.model.linear_layers)
+    weights = nn.Parameter(torch.randn(L), requires_grad=True)
+
+    # def net():
+    #     pred = (X * weights.view(1, -1)).sum(1)
+    #     return ((pred - y)**2).mean()
+    #
+    # optim = torch.optim.Adam([weights], lr=0.01, weight_decay=1.0)
+    # for iter in range(1000):
+    #     loss = net()
+    #     print(loss)
+    #     loss.backward()
+    #     optim.step()
+    #     optim.zero_grad()
+
+    from sklearn.linear_model import Ridge
+    clf = Ridge(alpha=0.01, fit_intercept=False)
+    clf.fit(X.numpy(), y.numpy())
+    print(clf.coef_)
+
+    weights = torch.tensor(clf.coef_, dtype=torch.float32)
+    for i in range(X.shape[0]):
+        pred = (X[i] * weights).sum()
+        if i > 0:
+            print(weight_names[i-1], y[i], pred, (pred - y[i])**2) #, X[i])
+
+    C = weights.abs()
+    print(C)
+    # C = torch.ones_like(C)
+    w = torch.tensor([layer.scheme.dim for layer in m.model.linear_layers], dtype=torch.int)
+    total_bits = w.sum() * 2
+    b = torch.ones(L, dtype=torch.int32) * 8
+    b = ext_calc_precision.calc_precision(b, C, w, total_bits)
+    print(b)
+
+    for i in range(L):
+        m.model.linear_layers[i].scheme.bits = b[i]
 
     # Compute Quant Var
     quant_var = 0
@@ -287,4 +365,4 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
 
     quant_var /= (num_batches * num_samples)
     overall_var /= (num_batches * num_samples)
-    print('Sample Var = {}, quant_var = {}, Overall_var = {}'.format(sample_var.sum(), quant_var.sum(), overall_var.sum()))
+    print('Sample Var = {}, quant_var = {}, Overall_var = {}'.format(sample_var, quant_var.sum(), overall_var.sum()))
