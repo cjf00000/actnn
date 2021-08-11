@@ -10,7 +10,6 @@ from torch import Tensor
 from torch.nn.modules.pooling import _size_2_t, _single, _pair, _triple, _MaxPoolNd, _AvgPoolNd
 
 from actnn.qscheme import QScheme
-from actnn.qbnscheme import QBNScheme
 from actnn.conf import config
 from actnn.ops import linear, batch_norm, conv1d, conv2d, conv3d, sync_batch_norm
 from actnn.ops import conv_transpose1d, conv_transpose2d, conv_transpose3d
@@ -212,7 +211,7 @@ class QBatchNorm1d(nn.BatchNorm1d):
     def __init__(self, num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True, group=0):
         super(QBatchNorm1d, self).__init__(num_features, eps, momentum, affine, track_running_stats)
         if config.adaptive_bn_scheme:
-            self.scheme = QBNScheme(group=group)
+            self.scheme = QScheme(group=group)
         else:
             self.scheme = None
 
@@ -263,7 +262,7 @@ class QBatchNorm2d(nn.BatchNorm2d):
     def __init__(self, num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True, group=0):
         super(QBatchNorm2d, self).__init__(num_features, eps, momentum, affine, track_running_stats)
         if config.adaptive_bn_scheme:
-            self.scheme = QBNScheme(group=group)
+            self.scheme = QScheme(self, group=group)
         else:
             self.scheme = None
 
@@ -314,7 +313,7 @@ class QBatchNorm3d(nn.BatchNorm3d):
     def __init__(self, num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True, group=0):
         super(QBatchNorm3d, self).__init__(num_features, eps, momentum, affine, track_running_stats)
         if config.adaptive_bn_scheme:
-            self.scheme = QBNScheme(group=group)
+            self.scheme = QScheme(group=group)
         else:
             self.scheme = None
 
@@ -363,9 +362,11 @@ class QBatchNorm3d(nn.BatchNorm3d):
 
 class QReLU(nn.Module):
     def __init__(self, inplace=False):
+        self.scheme = QScheme(self, group=0)
         super().__init__()
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        self.scheme.dim = input.numel() // input.shape[0]
         return ext_quantization.act_quantized_relu(input)
 
 
@@ -391,7 +392,7 @@ class QSyncBatchNorm(nn.SyncBatchNorm):
     ) -> None:
         super(QSyncBatchNorm, self).__init__(num_features, eps, momentum, affine, track_running_stats, process_group)
         if config.adaptive_bn_scheme:
-            self.scheme = QBNScheme(group=group)
+            self.scheme = QScheme(group=group)
         else:
             self.scheme = None
 

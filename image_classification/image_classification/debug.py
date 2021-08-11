@@ -233,19 +233,28 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     else:
         m = model_and_loss.model
 
-    m.set_name()
-    weight_names = [layer.layer_name for layer in m.model.linear_layers]
+    # m.set_name()
+    weight_names = []
+    schemes = []
+    # m.set_name()
+    for name, module in m.model.named_modules():
+        if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
+            schemes.append(module.scheme)
+            weight_names.append(name)
 
-    print('=======')
-    print(m.model.linear_layers[0].scheme.scales)
-    print('=======')
+    print(weight_names)
+    L = len(weight_names)
 
     def bp(input, target):
         optimizer.zero_grad()
         loss, output = model_and_loss(input, target)
         loss.backward()
         torch.cuda.synchronize()
-        grad = [layer.weight.grad.ravel().detach().cpu() for layer in m.model.linear_layers]
+        grad = []
+        for param in m.model.parameters():
+            if param.grad is not None:
+                grad.append(param.grad.detach().ravel().cpu())
+
         return torch.cat(grad, 0)
 
     QScheme.update_scale = False
@@ -277,14 +286,14 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     sample_var = sample_var.sum()
 
     # Gather samples
-    num_var_samples = 3
+    num_var_samples = 1
     # Linear regression
     X = []
     y = []
 
     config.compress_activation = True
     bp(inputs[0].cuda(), targets[0].cuda())   # Get dim
-    w = torch.tensor([layer.scheme.dim for layer in m.model.linear_layers], dtype=torch.int)
+    w = torch.tensor([scheme.dim for scheme in schemes], dtype=torch.int)
     total_bits = w.sum() * 2
 
     def get_bits(C):
@@ -292,13 +301,12 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
         b = ext_calc_precision.calc_precision(b, C, w, total_bits)
 
         for i in range(L):
-            m.model.linear_layers[i].scheme.bits = b[i]
+            schemes[i].bits = b[i]
 
         return b
 
-
     def add_data():
-        X_row = [2 ** (-2.0 * layer.scheme.bits) for layer in m.model.linear_layers]
+        X_row = [2 ** (-2.0 * scheme.bits) for scheme in schemes]
 
         idx = np.random.randint(0, num_batches-1)
         input, target = inputs[idx].cuda(), targets[idx].cuda()
@@ -309,7 +317,6 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
         X.append(X_row)
         y.append(var)
 
-    L = len(m.model.linear_layers)
     for iter in range(L * num_var_samples * num_batches):
         if iter % 100 == 0:
             print(iter)
@@ -319,8 +326,8 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
         # print(b)
         add_data()
 
-        for layer in m.model.linear_layers:
-            layer.scheme.bits = 2
+        for scheme in schemes:
+            scheme.bits = 2
 
     X = torch.tensor(X, dtype=torch.float32)
     y = torch.tensor(y, dtype=torch.float32) - sample_var
@@ -341,7 +348,8 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     C = weights.abs()
     print(C)
     b = get_bits(C)
-    print(b)
+    for l in range(L):
+        print(weight_names[l], b[l])
 
     # Compute Quant Var
     quant_var = 0
