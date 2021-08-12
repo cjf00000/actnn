@@ -19,7 +19,7 @@ torch::Tensor calc_precision(torch::Tensor b, torch::Tensor C, torch::Tensor w, 
 
     auto *b_data = b.data_ptr<int>();
     auto *C_data = C.data_ptr<float>();
-    auto *w_data = w.data_ptr<int>();
+    auto *w_data = w.data_ptr<int64_t>();
 
     auto get_obj = [&](float C, int b) {
         int coeff_1 = ((1 << b) - 1) * ((1 << b) - 1);
