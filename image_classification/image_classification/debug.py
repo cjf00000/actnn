@@ -275,9 +275,6 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
         #     ap.end_epoch()
         ap.end_epoch()
 
-    for l in range(L):
-        print(layer_names[l], ap.bits[l])
-
     # Compute Quant Var
     cnt = 0
     num_samples = 3
@@ -291,6 +288,12 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
         grad = bp(input, target)
         ap.iterate(grad)
         break
+
+    for l in range(L):
+        schemes[l].bits = ap.bits[l]
+
+    for l in range(L):
+        print(layer_names[l], ap.bits[l])
 
     for i, (input, target, _) in tqdm(data_iter):
         cnt += 1

@@ -16,7 +16,7 @@ ax[2].plot(X[:, 2], y, '.')
 ax[3].plot(X[:, 3], y, '.')
 fig.savefig('linear.pdf')
 
-y -= 1.5
+y -= 1.4
 clf = Ridge(alpha=1.0, fit_intercept=False)
 clf.fit(X, y)
 print(clf.coef_)

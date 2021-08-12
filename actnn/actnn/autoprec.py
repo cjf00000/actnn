@@ -67,7 +67,7 @@ class AutoPrecision:
         # Update batch gradient
         # beta1 will converge to 1
         self.grad_acc = self.grad_acc + grad
-        self.grad_sqr_acc = self.grad_sqr_acc + grad**2     # TODO this is useless...
+        # self.grad_sqr_acc = self.grad_sqr_acc + grad**2     # TODO this is useless...
 
         # Generate the bits allocation
         # if self.adaptive:   # Inject some noise for exploration
@@ -82,8 +82,17 @@ class AutoPrecision:
                                                       C, self.dims, total_bits)
 
         if self.adaptive:
-            ind = np.random.randint(0, self.L)
-            self.bits[ind] = 8
+            delta1 = (torch.rand(self.L) < 0.1).int() * 8
+            delta2 = (torch.rand(self.L) < 0.05).int() * -1
+            self.bits = torch.clamp(self.bits + delta1 + delta2, 1, 8)
+
+            # ind = np.random.randint(0, self.L)
+            # self.bits[ind] = 8
+
+        # else:
+        #     print('Non adaptive...')
+        #     for i in range(self.L):
+        #         print(C[i], self.bits[i], self.dims[i])
 
         # Update the underlying linear system
         X_row = [0 for i in range(self.num_groups)]
@@ -98,8 +107,8 @@ class AutoPrecision:
 
     def end_epoch(self):
         self.batch_grad = self.grad_acc / self.iter
-        second_momentum = self.grad_sqr_acc / self.iter
-        self.sample_var = (second_momentum - self.batch_grad ** 2).sum()
+        # second_momentum = self.grad_sqr_acc / self.iter
+        # self.sample_var = (second_momentum - self.batch_grad ** 2).sum()
 
         self.epoch += 1
         if self.epoch >= self.warmup_epochs:
