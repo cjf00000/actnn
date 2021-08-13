@@ -9,34 +9,34 @@ X, y = torch.load('linear_system.pkl')
 X = np.array(X)
 y = np.array(y)
 
-# fig, ax = plt.subplots(4, figsize=(5, 20))
-# ax[0].plot(X[:, 0], y, '.')
-# ax[1].plot(X[:, 1], y, '.')
-# ax[2].plot(X[:, 2], y, '.')
-# ax[3].plot(X[:, 3], y, '.')
-# fig.savefig('linear.pdf')
+fig, ax = plt.subplots(4, figsize=(5, 20))
+ax[0].plot(X[:, 0], y, '.')
+ax[1].plot(X[:, 1], y, '.')
+ax[2].plot(X[:, 2], y, '.')
+ax[3].plot(X[:, 3], y, '.')
+fig.savefig('linear.pdf')
 
-# y -= 1.4
-# clf = Ridge(alpha=1.0, fit_intercept=True)
-# clf.fit(X, y)
-# print(clf.coef_, clf.intercept_)
-# coef0 = clf.coef_
+y -= 1.4
+clf = Ridge(alpha=1.0, fit_intercept=True)
+clf.fit(X, y)
+print(clf.coef_, clf.intercept_)
+coef0 = clf.coef_
 
-Xs = {}
-ys = {}
-for i in range(X.shape[0]):
-    X_row = X[i]
-    y_row = y[i]
-    id = str(X_row)
-    if not id in Xs:
-        Xs[id] = []
-        ys[id] = []
-
-    Xs[id].append(X_row)
-    ys[id].append(y_row)
-
-for id in Xs:
-    print(id, np.mean(ys[id]), np.std(ys[id]))
+# Xs = {}
+# ys = {}
+# for i in range(X.shape[0]):
+#     X_row = X[i]
+#     y_row = y[i]
+#     id = str(X_row)
+#     if not id in Xs:
+#         Xs[id] = []
+#         ys[id] = []
+#
+#     Xs[id].append(X_row)
+#     ys[id].append(y_row)
+#
+# for id in Xs:
+#     print(id, np.mean(ys[id]), np.std(ys[id]))
 
 
 

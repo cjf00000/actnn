@@ -257,18 +257,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
 
     # Warmup (collect training data)
     cnt = 0
-    ap.adaptive = False
-    config.compress_activation = False
-    # X = []
-    # y = []
     for epoch in range(2):
-        if epoch > 0:
-            ap.adaptive = True
-            config.compress_activation = True
-
-        # if epoch > 0:
-        #     batch_grad = ap.batch_grad.clone()
-
         data_iter = enumerate(val_loader)
         for i, (input, target, _) in tqdm(data_iter):
             cnt += 1
@@ -282,23 +271,26 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
             grad = bp(input, target)
             ap.iterate(grad)
 
-            # if epoch > 0:
-            #     X.append(ap.b)
-            #     y.append(((grad - batch_grad)**2).sum())
-            #     print(ap.b, y[-1])
-
-        # if epoch % 2 == 1:
-        #     ap.end_epoch()
-        # ap.end_epoch()
         if epoch == 0 or epoch == 1:
             ap.end_epoch()
 
-    # torch.save([X, y], 'linear_system.pkl')
-    # ap.adaptive = True
-    # config.compress_activation = True
+    # collect testing data
+    # X = []
+    # y = []
+    # batch_grad = 0
+    # data_iter = enumerate(val_loader)
+    # cnt = 0
+    # for i, (input, target, _) in tqdm(data_iter):
+    #     cnt += 1
+    #     input = input.cuda()
+    #     target = target.cuda()
+    #     grad = bp(input, target)
+    #     batch_grad = batch_grad + grad
+    #
+    # batch_grad = batch_grad / cnt
+    #
     # for epoch in range(5):
     #     data_iter = enumerate(val_loader)
-    #     ap.refresh_bits()
     #     for l in range(L):
     #         schemes[l].bits = ap.bits[l]
     #     print('bits ', ap.bits)
@@ -309,43 +301,13 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     #         input = input.cuda()
     #         target = target.cuda()
     #         grad = bp(input, target)
-    #         error = error + (grad - ap.batch_grad)**2
+    #         error = error + (grad - batch_grad)**2
     #
     #     error = error.sum() / cnt
+    #     ap.iterate(grad)
+    #     X.append(ap.X[-1])
+    #     y.append(error)
     #     print('error ', error)
-
-
-    # num_samples = 3
-    # # collect testing data
-    # X = []
-    # y = []
-    # for epoch in range(1):
-    #     ap.adaptive = True
-    #     data_iter = enumerate(val_loader)
-    #     for i, (input, target, _) in tqdm(data_iter):
-    #         input = input.cuda()
-    #         target = target.cuda()
-    #
-    #         ap.refresh_bits()
-    #         for l in range(L):
-    #             schemes[l].bits = ap.bits[l]
-    #
-    #         config.compress_activation = False
-    #         exact_grad = bp(input, target)
-    #         config.compress_activation = True
-    #         quant_var = 0
-    #         for iter in range(num_samples):
-    #             grad = bp(input, target)
-    #             quant_var = quant_var + (exact_grad - grad) ** 2
-    #
-    #         quant_var = quant_var / num_samples
-    #         X_row, _ = ap.generate_ls(grad)
-    #         quant_var = quant_var.sum()
-    #         if quant_var < 1e6:
-    #             X.append(X_row)
-    #             y.append(quant_var)
-    #
-    #         print(X_row, quant_var)
     #
     # torch.save([X, y], 'test_set.pkl')
 

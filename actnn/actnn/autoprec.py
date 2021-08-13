@@ -34,7 +34,7 @@ class AutoPrecision:
         self.groups = groups
         self.dims = dims
         # Sensitivity for each tensor, tied within each group
-        self.C = torch.ones(self.L)
+        self.C = torch.ones(self.num_groups)
         self.iter = 0
         self.epoch = 0
         self.adaptive = adaptive
@@ -56,25 +56,21 @@ class AutoPrecision:
         self.refresh_bits()
 
     def refresh_bits(self):
-        C = self.C
         total_bits = self.total_bits
 
+        groups = torch.tensor(self.groups, dtype=torch.long)
+        C = self.C[groups]
+
         # if self.adaptive:
-        #     delta1 = (torch.rand(self.L) < 0.1).int() * 8
-        #     delta2 = (torch.rand(self.L) < 0.05).int() * -1
-        #     self.bits = torch.clamp(self.bits + delta1 + delta2, 1, 8)
-        if self.adaptive:
-            # Pure exploration
-            # b = torch.randint(8, [self.num_groups], dtype=torch.int32) + 1
-            b = torch.randint(2, [self.num_groups], dtype=torch.int32) * 7 + 1
-            self.b = b
-            groups = torch.tensor(self.groups, dtype=torch.int64)
-            self.bits = b[groups]
-        else:
-            # Pure exploitation
-            self.bits = torch.ones(self.L, dtype=torch.int32) * self.max_bits
-            self.bits = ext_calc_precision.calc_precision(self.bits,
-                                                          C, self.dims, total_bits)
+        #     C = C * (torch.rand_like(C) * 2 - 1)
+
+        self.bits = torch.ones(self.L, dtype=torch.int32) * self.max_bits
+        self.bits = ext_calc_precision.calc_precision(self.bits,
+                                                      C, self.dims, total_bits)
+        if self.adaptive:       # TODO control the overall bits
+            delta1 = (torch.rand(self.L) < 0.1).int() * 8
+            delta2 = (torch.rand(self.L) < 0.05).int() * -1
+            self.bits = torch.clamp(self.bits + delta1 + delta2, 1, 8)
 
     def generate_ls(self, grad):
         X_row = [0 for i in range(self.num_groups)]
@@ -152,9 +148,7 @@ class AutoPrecision:
         min_coef = np.min(coef)
         print(coef)
         if min_coef < 0:
-            print('Warning: negative coefficient detected ', min_coef)
+            print('ActNN Warning: negative coefficient detected ', min_coef)
             coef = coef - min_coef + 1e-8
 
         self.C = torch.tensor(coef, dtype=torch.float32)
-        groups = torch.tensor(self.groups, dtype=torch.long)
-        self.C = self.C[groups]
