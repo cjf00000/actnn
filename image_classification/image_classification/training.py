@@ -8,8 +8,10 @@ from . import logger as log
 from . import resnet as models
 from . import utils
 from .debug import get_var_black_box, test_autoprecision
-from actnn import config, QScheme, QModule, get_memory_usage, compute_tensor_bytes, exp_recorder
+from actnn import config, QScheme, QModule, get_memory_usage, compute_tensor_bytes, exp_recorder, AutoPrecision
 from copy import copy
+from tqdm import tqdm
+
 
 try:
     # from apex.parallel import DistributedDataParallel as DDP
@@ -178,7 +180,7 @@ def lr_exponential_policy(base_lr, warmup_length, epochs, final_multiplier=0.001
 
 
 def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_multiplier = 1):
-    def _step(input, target, optimizer_step = True):
+    def _step(input, target, optimizer_step = True, ap=None):
         input_var = Variable(input)
         target_var = Variable(target)
 
@@ -226,6 +228,14 @@ def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_
         else:
             loss.backward()
 
+        grad = []
+        for param in model_and_loss.model.model.parameters():
+            if param.grad is not None:
+                grad.append(param.grad.detach().ravel())
+        grad = torch.cat(grad, 0)
+
+        ap.iterate(grad)
+
         if optimizer_step:
             opt = optimizer.optimizer if isinstance(optimizer, FP16_Optimizer) else optimizer
             for param_group in opt.param_groups:
@@ -245,7 +255,7 @@ train_step_ct = 0
 train_max_ips = 0
 train_max_batch = 0
 
-def train(train_loader, model_and_loss, optimizer, lr_scheduler, fp16, logger, epoch, use_amp=False, prof=-1, batch_size_multiplier=1, register_metrics=True):
+def train(train_loader, model_and_loss, optimizer, lr_scheduler, fp16, logger, epoch, use_amp=False, prof=-1, batch_size_multiplier=1, register_metrics=True, ap=None, schemes=None):
     if register_metrics and logger is not None:
         logger.register_metric('train.top1', log.AverageMeter(), log_level = 0)
         logger.register_metric('train.top5', log.AverageMeter(), log_level = 0)
@@ -287,7 +297,10 @@ def train(train_loader, model_and_loss, optimizer, lr_scheduler, fp16, logger, e
                 break
 
         optimizer_step = ((i + 1) % batch_size_multiplier) == 0
-        loss, _, prec1, prec5 = step(input, target, optimizer_step = optimizer_step)
+        for l in range(len(schemes)):
+            schemes[l].bits = ap.bits[l]
+
+        loss, _, prec1, prec5 = step(input, target, optimizer_step = optimizer_step, ap=ap)
 
         it_time = time.time() - end
 
@@ -412,13 +425,70 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
     QScheme.update_scale = True
     prec1 = -1
 
+    # Prepare AutoPrecision
+    model_and_loss.train()
+    if hasattr(model_and_loss.model, 'module'):
+        m = model_and_loss.model.module.model
+    else:
+        m = model_and_loss.model.model
+
+    def bp(input, target):
+        optimizer.zero_grad()
+        loss, output = model_and_loss(input, target)
+        loss.backward()
+        torch.cuda.synchronize()
+        grad = []
+        for param in m.parameters():
+            if param.grad is not None:
+                grad.append(param.grad.detach().ravel().cpu())
+
+        return torch.cat(grad, 0)
+
+    # Collect groups and dims
+    groups = []
+    dims = []
+    id2group = {}
+    schemes = []
+    layer_names = []
+
+    data_iter = enumerate(train_loader)
+    for i, (input, target, _) in tqdm(data_iter):
+        break
+
+    bp(input.cuda(), target.cuda())  # Get dim
+
+    gcnt = 0
+    for name, module in m.named_modules():
+        if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
+            id = str(type(module)) + str(module.scheme.rank)
+            if not id in id2group:
+                print(id)
+                id2group[id] = gcnt
+                gcnt += 1
+
+            groups.append(id2group[id])
+            dims.append(module.scheme.dim)
+            schemes.append(module.scheme)
+            layer_names.append(name)
+
+    L = len(groups)
+
+    dims = torch.tensor(dims, dtype=torch.long)
+    ap = AutoPrecision(2, groups, dims, warmup_epochs=2)
+
+
     epoch_iter = range(start_epoch, epochs)
     if logger is not None:
         epoch_iter = logger.epoch_generator_wrapper(epoch_iter)
+
     for epoch in epoch_iter:
         print('Epoch ', epoch)
         if not skip_training:
-            train(train_loader, model_and_loss, optimizer, lr_scheduler, fp16, logger, epoch, use_amp = use_amp, prof = prof, register_metrics=epoch==start_epoch, batch_size_multiplier=batch_size_multiplier)
+            train(train_loader, model_and_loss, optimizer, lr_scheduler, fp16, logger, epoch, ap=ap, schemes=schemes, use_amp = use_amp, prof = prof, register_metrics=epoch==start_epoch, batch_size_multiplier=batch_size_multiplier)
+
+        # ap.end_epoch()
+        # for l in range(L):
+        #     print(layer_names[l], ap.bits[l])
 
         if not skip_validation:
             prec1 = validate(val_loader, model_and_loss, fp16, logger, epoch, prof = prof, register_metrics=epoch==start_epoch)

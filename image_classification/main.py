@@ -290,7 +290,7 @@ def main(args):
                 ]
         # try:
         #     import wandb
-        #     wandb.init(project="actnn", config=args, name=args.workspace)
+        #     wandb.init(entity="jianfeic", project="actnn", config=args, name=args.workspace)
         #     logger_backends.append(log.WandbBackend(wandb))
         #     print('Logging to wandb...')
         # except ImportError:

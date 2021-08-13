@@ -53,8 +53,39 @@ class AutoPrecision:
         self.warmup_epochs = warmup_epochs
         self.reg = reg
         self.num_trails = num_trails
+        self.refresh_bits()
+
+    def refresh_bits(self):
+        C = self.C
+        total_bits = self.total_bits
+
+        # if self.adaptive:
+        #     delta1 = (torch.rand(self.L) < 0.1).int() * 8
+        #     delta2 = (torch.rand(self.L) < 0.05).int() * -1
+        #     self.bits = torch.clamp(self.bits + delta1 + delta2, 1, 8)
+        if self.adaptive:
+            # Pure exploration
+            # b = torch.randint(8, [self.num_groups], dtype=torch.int32) + 1
+            b = torch.randint(2, [self.num_groups], dtype=torch.int32) * 7 + 1
+            self.b = b
+            groups = torch.tensor(self.groups, dtype=torch.int64)
+            self.bits = b[groups]
+        else:
+            # Pure exploitation
+            self.bits = torch.ones(self.L, dtype=torch.int32) * self.max_bits
+            self.bits = ext_calc_precision.calc_precision(self.bits,
+                                                          C, self.dims, total_bits)
+
+    def generate_ls(self, grad):
+        X_row = [0 for i in range(self.num_groups)]
+        for l in range(self.L):
+            X_row[self.groups[l]] += 2 ** (-2.0 * self.bits[l])
+
+        y_row = ((grad - self.batch_grad)**2).sum()
+        return X_row, y_row
 
     def iterate(self, grad):
+        # print(grad)
         """
         Given the sampled gradient vector (gather selected dimensions from the full gradient)
         This procedure will calculate the bits allocation for next iteration, which
@@ -69,41 +100,15 @@ class AutoPrecision:
         self.grad_acc = self.grad_acc + grad
         # self.grad_sqr_acc = self.grad_sqr_acc + grad**2     # TODO this is useless...
 
-        # Generate the bits allocation
-        # if self.adaptive:   # Inject some noise for exploration
-        #     C = self.C * (2 * torch.rand_like(self.C) - 1).exp()
-        #     total_bits = (self.total_bits * (0.9 + torch.rand([]) * 0.2)).long()
-        # else:
-        C = self.C
-        total_bits = self.total_bits
-
-        self.bits = torch.ones(self.L, dtype=torch.int32) * self.max_bits
-        self.bits = ext_calc_precision.calc_precision(self.bits,
-                                                      C, self.dims, total_bits)
-
-        if self.adaptive:
-            delta1 = (torch.rand(self.L) < 0.1).int() * 8
-            delta2 = (torch.rand(self.L) < 0.05).int() * -1
-            self.bits = torch.clamp(self.bits + delta1 + delta2, 1, 8)
-
-            # ind = np.random.randint(0, self.L)
-            # self.bits[ind] = 8
-
-        # else:
-        #     print('Non adaptive...')
-        #     for i in range(self.L):
-        #         print(C[i], self.bits[i], self.dims[i])
-
+        X_row, y_row = self.generate_ls(grad)
         # Update the underlying linear system
-        X_row = [0 for i in range(self.num_groups)]
-        for l in range(self.L):
-            X_row[self.groups[l]] += 2 ** (-2.0 * self.bits[l])
-
-        y_row = ((grad - self.batch_grad)**2).sum()
-        self.X.append(X_row)
-        self.y.append(y_row)
+        if y_row < 1e6:
+            self.X.append(X_row)
+            self.y.append(y_row)
+            # print(self.b, y_row)
 
         self.iter += 1
+        self.refresh_bits()
 
     def end_epoch(self):
         self.batch_grad = self.grad_acc / self.iter
