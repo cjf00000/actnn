@@ -238,6 +238,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     for name, module in m.named_modules():
         if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
             id = str(type(module)) + str(module.scheme.rank)
+            # id = str(np.random.rand())
             if not id in id2group:
                 print(id)
                 id2group[id] = gcnt
@@ -253,7 +254,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     # Test AutoPrecision
     from actnn import AutoPrecision
     dims = torch.tensor(dims, dtype=torch.long)
-    ap = AutoPrecision(2, groups, dims, warmup_iters=300)
+    ap = AutoPrecision(2, groups, dims, warmup_iters=150)
 
     # Warmup (collect training data)
     cnt = 0
@@ -327,6 +328,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
 
     for l in range(L):
         print(layer_names[l], ap.bits[l])
+    print(ap.C)
 
     for i, (input, target, _) in tqdm(data_iter):
         cnt += 1
