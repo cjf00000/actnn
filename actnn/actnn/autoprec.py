@@ -16,7 +16,8 @@ class AutoPrecision:
     4. call iterate(gradient)
     5. call end_epoch
     """
-    def __init__(self, bits, groups, dims, warmup_epochs=2,
+    def __init__(self, bits, groups, dims,
+                 momentum=0.999, warmup_iters=1000, update_interval=10, sample_size=1000,
                  max_bits=8, adaptive=True, reg=1.0, num_trails=5):
         """
         :param bits: average number of bits (Python int)
@@ -39,10 +40,8 @@ class AutoPrecision:
         self.epoch = 0
         self.adaptive = adaptive
 
-        self.grad_acc = 0
-        self.grad_sqr_acc = 0
-        self.batch_grad = 0
-        self.sample_var = 0
+        self.batch_grad_ema = 0
+        self.beta1 = 0
 
         self.bits = torch.ones(self.L, dtype=torch.int32) * bits
         self.total_bits = bits * dims.sum()
@@ -50,7 +49,10 @@ class AutoPrecision:
         self.X = []     # The linear system, epoch_size * num_groups matrix
         self.y = []
 
-        self.warmup_epochs = warmup_epochs
+        self.momentum = momentum
+        self.warmup_iters = warmup_iters
+        self.update_interval = update_interval
+        self.sample_size = sample_size
         self.reg = reg
         self.num_trails = num_trails
         self.refresh_bits()
@@ -77,7 +79,7 @@ class AutoPrecision:
         for l in range(self.L):
             X_row[self.groups[l]] += 2 ** (-2.0 * self.bits[l])
 
-        y_row = ((grad - self.batch_grad)**2).sum()
+        y_row = ((grad - self.batch_grad_ema / self.beta1)**2).sum()
         return X_row, y_row
 
     def iterate(self, grad):
@@ -89,38 +91,28 @@ class AutoPrecision:
 
         If grad is not available, simply pass torch.tensor(1.0)
         """
+        self.iter += 1
         grad = grad.detach().cpu()
+
+        # Update the underlying linear system
+        if self.iter >= self.warmup_iters:
+            X_row, y_row = self.generate_ls(grad)
+            if y_row < 1e6:
+                self.X.append(X_row)
+                self.y.append(y_row)
+            if len(self.X) > self.sample_size:
+                self.X.pop(0)
+                self.y.pop(0)
+
+        self.refresh_bits()
 
         # Update batch gradient
         # beta1 will converge to 1
-        self.grad_acc = self.grad_acc + grad
-        # self.grad_sqr_acc = self.grad_sqr_acc + grad**2     # TODO this is useless...
+        self.batch_grad_ema = self.momentum * self.batch_grad_ema + (1 - self.momentum) * grad
+        self.beta1 = self.momentum * self.beta1 + (1 - self.momentum)
 
-        X_row, y_row = self.generate_ls(grad)
-        # Update the underlying linear system
-        if y_row < 1e6:
-            self.X.append(X_row)
-            self.y.append(y_row)
-            # print(self.b, y_row)
-
-        self.iter += 1
-        self.refresh_bits()
-
-    def end_epoch(self):
-        self.batch_grad = self.grad_acc / self.iter
-        # second_momentum = self.grad_sqr_acc / self.iter
-        # self.sample_var = (second_momentum - self.batch_grad ** 2).sum()
-
-        self.epoch += 1
-        if self.epoch >= self.warmup_epochs:
+        if self.iter >= 2 * self.warmup_iters and self.iter % self.update_interval == 0:
             self.update_coef()
-
-        self.X = []
-        self.y = []
-        self.iter = 0
-
-        self.grad_acc = 0
-        self.grad_sqr_acc = 0
 
     def update_coef(self):
         """
@@ -137,16 +129,16 @@ class AutoPrecision:
             idx = np.random.randint(0, data_size, [data_size])
             clf.fit(X[idx], y[idx])
             coefs.append(clf.coef_)
-            print(clf.intercept_)
+            # print(clf.intercept_)
 
-        print(coefs)
+        # print(coefs)
         coefs = np.stack(coefs)
         mean_coef = np.mean(coefs, 0)
         std_coef = np.std(coefs, 0)
 
         coef = mean_coef + std_coef
         min_coef = np.min(coef)
-        print(coef)
+        # print('Coefficients: ', coef)
         if min_coef < 0:
             print('ActNN Warning: negative coefficient detected ', min_coef)
             coef = coef - min_coef + 1e-8

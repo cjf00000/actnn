@@ -253,7 +253,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     # Test AutoPrecision
     from actnn import AutoPrecision
     dims = torch.tensor(dims, dtype=torch.long)
-    ap = AutoPrecision(2, groups, dims, warmup_epochs=2)
+    ap = AutoPrecision(2, groups, dims, warmup_iters=300)
 
     # Warmup (collect training data)
     cnt = 0
@@ -270,9 +270,6 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
 
             grad = bp(input, target)
             ap.iterate(grad)
-
-        if epoch == 0 or epoch == 1:
-            ap.end_epoch()
 
     # collect testing data
     # X = []
@@ -345,10 +342,10 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
         for iter in range(num_samples):
             grad = bp(input, target)
             quant_var = quant_var + (exact_grad - grad) ** 2
-            overall_var = overall_var + (grad - ap.batch_grad) ** 2
+            overall_var = overall_var + (grad - ap.batch_grad_ema / ap.beta1) ** 2
 
     quant_var /= (num_batches * num_samples)
     overall_var /= (num_batches * num_samples)
 
-    print('Sample Var = {}, quant_var = {}, Overall_var = {}'
-          .format(ap.sample_var, quant_var.sum(), overall_var.sum()))
+    print('quant_var = {}, Overall_var = {}'
+          .format(quant_var.sum(), overall_var.sum()))

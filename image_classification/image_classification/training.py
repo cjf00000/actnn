@@ -474,8 +474,7 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
     L = len(groups)
 
     dims = torch.tensor(dims, dtype=torch.long)
-    ap = AutoPrecision(2, groups, dims, warmup_epochs=2)
-
+    ap = AutoPrecision(2, groups, dims)
 
     epoch_iter = range(start_epoch, epochs)
     if logger is not None:
@@ -486,9 +485,9 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
         if not skip_training:
             train(train_loader, model_and_loss, optimizer, lr_scheduler, fp16, logger, epoch, ap=ap, schemes=schemes, use_amp = use_amp, prof = prof, register_metrics=epoch==start_epoch, batch_size_multiplier=batch_size_multiplier)
 
-        # ap.end_epoch()
-        # for l in range(L):
-        #     print(layer_names[l], ap.bits[l])
+        for l in range(L):
+            print(layer_names[l], ap.bits[l])
+        print(ap.C)
 
         if not skip_validation:
             prec1 = validate(val_loader, model_and_loss, fp16, logger, epoch, prof = prof, register_metrics=epoch==start_epoch)
