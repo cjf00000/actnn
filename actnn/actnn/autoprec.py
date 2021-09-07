@@ -70,11 +70,11 @@ class AutoPrecision:
         if self.adaptive:
             # b = torch.randint_like(self.bits, 2) * 7 + 1
             # self.bits = b[groups]
-            # self.bits = torch.randint_like(self.bits, 8) + 1
+            self.bits = torch.randint_like(self.bits, 8) + 1
         # if self.adaptive:       # TODO control the overall bits
-            mask = (torch.rand(self.L) < 0.05).int()
-            new_bits = torch.randint_like(self.bits, 2) * 7 + 1
-            self.bits = self.bits * (1 - mask) + mask * new_bits
+        #     mask = (torch.rand(self.L) < 0.05).int()
+        #     new_bits = torch.randint_like(self.bits, 2) * 7 + 1
+        #     self.bits = self.bits * (1 - mask) + mask * new_bits
             # print(self.bits)
             # delta1 = (torch.rand(self.L) < 0.1).int() * 8
             # delta2 = (torch.rand(self.L) < 0.05).int() * -1

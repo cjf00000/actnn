@@ -219,7 +219,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
             if param.grad is not None:
                 grad.append(param.grad.detach().ravel().cpu())
 
-        return torch.cat(grad, 0)
+        return loss, torch.cat(grad, 0)
 
     # Collect groups and dims
     groups = []
@@ -237,8 +237,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     gcnt = 0
     for name, module in m.named_modules():
         if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
-            id = str(type(module)) + str(module.scheme.rank)
-            # id = str(np.random.rand())
+            # id = str(type(module)) + str(module.scheme.rank)
+            id = str(np.random.rand())
             if not id in id2group:
                 print(id)
                 id2group[id] = gcnt
@@ -250,6 +250,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
             layer_names.append(name)
 
     L = len(groups)
+    # pickle.dump([layer_names, dims], open('layer_names.pkl', 'wb'))
+    # exit(0)
 
     # Test AutoPrecision
     from actnn import AutoPrecision
@@ -257,57 +259,106 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     ap = AutoPrecision(2, groups, dims, warmup_iters=150)
 
     # Warmup (collect training data)
-    cnt = 0
-    for epoch in range(2):
-        data_iter = enumerate(val_loader)
-        for i, (input, target, _) in tqdm(data_iter):
-            cnt += 1
-
-            input = input.cuda()
-            target = target.cuda()
-
-            for l in range(L):
-                schemes[l].bits = ap.bits[l]
-
-            grad = bp(input, target)
-            ap.iterate(grad)
-
-    # collect testing data
-    # X = []
-    # y = []
-    # batch_grad = 0
-    # data_iter = enumerate(val_loader)
     # cnt = 0
-    # for i, (input, target, _) in tqdm(data_iter):
-    #     cnt += 1
-    #     input = input.cuda()
-    #     target = target.cuda()
-    #     grad = bp(input, target)
-    #     batch_grad = batch_grad + grad
-    #
-    # batch_grad = batch_grad / cnt
-    #
-    # for epoch in range(5):
+    # for epoch in range(2):
     #     data_iter = enumerate(val_loader)
-    #     for l in range(L):
-    #         schemes[l].bits = ap.bits[l]
-    #     print('bits ', ap.bits)
-    #     error = 0
-    #     cnt = 0
     #     for i, (input, target, _) in tqdm(data_iter):
     #         cnt += 1
+    #
     #         input = input.cuda()
     #         target = target.cuda()
+    #
+    #         for l in range(L):
+    #             schemes[l].bits = ap.bits[l]
+    #
     #         grad = bp(input, target)
-    #         error = error + (grad - batch_grad)**2
-    #
-    #     error = error.sum() / cnt
-    #     ap.iterate(grad)
-    #     X.append(ap.X[-1])
-    #     y.append(error)
-    #     print('error ', error)
-    #
-    # torch.save([X, y], 'test_set.pkl')
+    #         ap.iterate(grad)
+
+    # collect testing data
+    X = []
+    y = []
+    es = []
+    bits = []
+    qerrors = []    # Quantization error
+    iscales = []    # Input scale
+    losses0 = []
+    losses1 = []
+    batch_grad = 0
+    data_iter = enumerate(val_loader)
+    cnt = 0
+    for i, (input, target, _) in tqdm(data_iter):
+        cnt += 1
+        input = input.cuda()
+        target = target.cuda()
+        _, grad = bp(input, target)
+        batch_grad = batch_grad + grad
+
+    batch_grad = batch_grad / cnt
+
+    b = torch.load('b.pkl')
+    for epoch in range(2000):
+        data_iter = enumerate(val_loader)
+        for l in range(L):
+            schemes[l].bits = ap.bits[l]
+            # schemes[l].bits = b[l]
+        print('bits ', ap.bits)
+        # print('bits ', b)
+        error = 0
+        cnt = 0
+        errors = []
+        qe = []
+        isc = []
+        ls0 = []
+        ls1 = []
+        for i, (input, target, _) in tqdm(data_iter):
+            cnt += 1
+            input = input.cuda()
+            target = target.cuda()
+            loss0, grad = bp(input, target)
+            e = (grad - batch_grad)**2
+            error = error + e
+            errors.append(e.sum())
+            qe.append(torch.tensor([scheme.delta.item() for scheme in schemes]))
+            isc.append(torch.tensor([scheme.ref_delta.item() for scheme in schemes]))
+
+            # Backup parameters
+            params = [param for param in m.parameters() if param.grad is not None]
+            params_bak = [param.clone() for param in params]
+
+            with torch.no_grad():
+                # Update parameters
+                for param in params:
+                    param -= 1e-3 * param.grad
+
+                # Compute loss
+                loss1, _ = model_and_loss(input, target)
+
+                # Restore parameters
+                for param, param0 in zip(params, params_bak):
+                    param.copy_(param0)
+
+            del params_bak
+            # print(loss0.item(), loss1.item())
+            ls0.append(loss0.item())
+            ls1.append(loss1.item())
+            # for l in range(L):
+            #     print(schemes[l].delta, schemes[l].ref_delta)
+
+        error = error.sum() / cnt
+
+        bits.append(ap.bits)
+        ap.iterate(grad)
+        y.append(error)
+        es.append(errors)
+        qerrors.append(qe)
+        iscales.append(isc)
+        losses0.append(torch.tensor(ls0))
+        losses1.append(torch.tensor(ls1))
+
+        print('error ', error)
+
+        if epoch % 10 == 0:
+            torch.save([bits, y, es, losses0, losses1, qerrors, iscales], 'test_set.pkl')
 
     # Compute Quant Var
     cnt = 0
@@ -315,21 +366,22 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     quant_var = 0
     overall_var = 0
     data_iter = enumerate(val_loader)
-    ap.adaptive = False
-    for i, (input, target, _) in tqdm(data_iter):
-        input = input.cuda()
-        target = target.cuda()
-        grad = bp(input, target)
-        ap.iterate(grad)
-        break
-
+    # ap.adaptive = False
+    # for i, (input, target, _) in tqdm(data_iter):
+    #     input = input.cuda()
+    #     target = target.cuda()
+    #     grad = bp(input, target)
+    #     ap.iterate(grad)
+    #     break
+    #
     for l in range(L):
-        schemes[l].bits = ap.bits[l]
-
-    for l in range(L):
-        print(layer_names[l], ap.bits[l])
-    print(ap.C)
-
+        # schemes[l].bits = ap.bits[l]
+        schemes[l].bits = b[l]
+    #
+    # for l in range(L):
+    #     print(layer_names[l], ap.bits[l])
+    # print(ap.C)
+    #
     for i, (input, target, _) in tqdm(data_iter):
         cnt += 1
         if cnt == 10:
@@ -344,7 +396,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
         for iter in range(num_samples):
             grad = bp(input, target)
             quant_var = quant_var + (exact_grad - grad) ** 2
-            overall_var = overall_var + (grad - ap.batch_grad_ema / ap.beta1) ** 2
+            overall_var = overall_var + (grad - batch_grad) ** 2
 
     quant_var /= (num_batches * num_samples)
     overall_var /= (num_batches * num_samples)

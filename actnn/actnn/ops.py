@@ -149,6 +149,7 @@ class convnd(Function):
         #     assert not ctx.needs_input_grad[0] and not ctx.needs_input_grad[1]
         #     return F.conv2d(input, weight, bias, stride, padding, dilation, groups)
         quantized = quantize_activation(input, scheme)
+        ctx.debug_input = input
 
         ctx.scheme = scheme
         ctx.saved = quantized, weight, bias
@@ -181,6 +182,8 @@ class convnd(Function):
 
         quantized, weight, bias = ctx.saved
         input = dequantize_activation(quantized, q_input_shape)
+        ctx.scheme.delta = ((input - ctx.debug_input) ** 2).sum()
+        ctx.scheme.ref_delta = (ctx.debug_input ** 2).sum()
         del quantized, ctx.saved
 
         empty_cache(config.empty_cache_threshold)
@@ -393,6 +396,7 @@ class linear(Function):
         ctx.scheme = scheme
         ctx.saved = quantized, weight, bias
         ctx.other_args = input.shape
+        ctx.debug_input = input
 
         return F.linear(input, weight, bias)
 
@@ -405,6 +409,8 @@ class linear(Function):
         q_input_shape = ctx.other_args
 
         input = dequantize_activation(quantized, q_input_shape)
+        ctx.scheme.delta = ((input - ctx.debug_input)**2).sum()
+        ctx.scheme.ref_delta = (ctx.debug_input ** 2).sum()
         del quantized, ctx.saved
 
         empty_cache(config.empty_cache_threshold)
@@ -442,6 +448,7 @@ class batch_norm(Function):
         #     return ext_backward_func.cudnn_batch_norm(
         #         input, weight, bias, running_mean, running_var, training, exponential_average_factor, eps)[0]
         quantized = quantize_activation(input, scheme)
+        ctx.debug_input = input
 
         empty_cache(config.empty_cache_threshold)
 
@@ -477,6 +484,8 @@ class batch_norm(Function):
         q_input_shape = ctx.other_args
 
         input = dequantize_activation(quantized, q_input_shape)
+        ctx.scheme.delta = ((input - ctx.debug_input) ** 2).sum()
+        ctx.scheme.ref_delta = (ctx.debug_input ** 2).sum()
         del quantized, ctx.saved
 
         empty_cache(config.empty_cache_threshold)
