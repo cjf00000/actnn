@@ -283,6 +283,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     iscales = []    # Input scale
     losses0 = []
     losses1 = []
+    isizes = []
+    gsizes = []
     batch_grad = 0
     data_iter = enumerate(val_loader)
     cnt = 0
@@ -296,7 +298,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     batch_grad = batch_grad / cnt
 
     b = torch.load('b.pkl')
-    for epoch in range(2000):
+    for epoch in range(100):
         data_iter = enumerate(val_loader)
         for l in range(L):
             schemes[l].bits = ap.bits[l]
@@ -307,6 +309,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
         cnt = 0
         errors = []
         qe = []
+        isz = []
+        gsz = []
         isc = []
         ls0 = []
         ls1 = []
@@ -320,6 +324,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
             errors.append(e.sum())
             qe.append(torch.tensor([scheme.delta.item() for scheme in schemes]))
             isc.append(torch.tensor([scheme.ref_delta.item() for scheme in schemes]))
+            isz.append(torch.tensor([scheme.isize.item() for scheme in schemes]))
+            gsz.append(torch.tensor([scheme.gsize.item() for scheme in schemes]))
 
             # Backup parameters
             params = [param for param in m.parameters() if param.grad is not None]
@@ -352,13 +358,15 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
         es.append(errors)
         qerrors.append(qe)
         iscales.append(isc)
+        isizes.append(isz)
+        gsizes.append(gsz)
         losses0.append(torch.tensor(ls0))
         losses1.append(torch.tensor(ls1))
 
         print('error ', error)
 
-        if epoch % 10 == 0:
-            torch.save([bits, y, es, losses0, losses1, qerrors, iscales], 'test_set.pkl')
+        if epoch % 1 == 0:
+            torch.save([bits, y, es, isizes, gsizes, losses0, losses1, qerrors, iscales], 'test_set.pkl')
 
     # Compute Quant Var
     cnt = 0
@@ -391,10 +399,10 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
         target = target.cuda()
 
         config.compress_activation = False
-        exact_grad = bp(input, target)
+        _, exact_grad = bp(input, target)
         config.compress_activation = True
         for iter in range(num_samples):
-            grad = bp(input, target)
+            _, grad = bp(input, target)
             quant_var = quant_var + (exact_grad - grad) ** 2
             overall_var = overall_var + (grad - batch_grad) ** 2
 

@@ -370,6 +370,8 @@ class QReLU(nn.Module):
         self.scheme.dim = input.numel() // input.shape[0]
         self.scheme.delta = torch.tensor(0.0)     # TODO wrong!
         self.scheme.ref_delta = torch.tensor(0.0)
+        self.scheme.isize = (input ** 2).sum()
+        self.scheme.gsize = torch.tensor(0.0)
         return ext_quantization.act_quantized_relu(input)
 
 

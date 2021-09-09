@@ -124,6 +124,63 @@ std::pair<torch::Tensor, torch::Tensor> calc_precision_dp(torch::Tensor A, torch
     return std::make_pair(b_vec, p_vec);
 }
 
+
+// Greedy algorithm to find max -a^T theta + beta sqrt(a^T Vinv a)
+// where a_i = 2^(-2b_i), s.t., \sum_i b_i w_i <= target
+torch::Tensor calc_precision_ucb(torch::Tensor b, torch::Tensor C, double beta, torch::Tensor Vinv,
+                                 torch::Tensor w, double target) {
+    TORCH_CHECK(b.device().is_cpu(), "b must be a CPU tensor!");
+    TORCH_CHECK(b.is_contiguous(), "b must be contiguous!");
+    TORCH_CHECK(C.device().is_cpu(), "C must be a CPU tensor!");
+    TORCH_CHECK(C.is_contiguous(), "C must be contiguous!");
+    TORCH_CHECK(w.device().is_cpu(), "w must be a CPU tensor!");
+    TORCH_CHECK(w.is_contiguous(), "w must be contiguous!");
+    TORCH_CHECK(Vinv.device().is_cpu(), "Vinv must be a CPU tensor!");
+    TORCH_CHECK(Vinv.is_contiguous(), "Vinv must be contiguous!");
+
+    std::priority_queue<std::pair<float, int64_t>> q;
+
+    auto *b_data = b.data_ptr<int>();
+    auto *C_data = C.data_ptr<float>();
+    auto *w_data = w.data_ptr<int64_t>();
+    auto *Vinv_data = Vinv.data_ptr<float>();
+
+    std::vector<float> a(N);
+    int64_t N = b.size(0);
+    auto get_a = [&](int b) { return 1.0 / (((1 << b) - 1) * ((1 << b) - 1)); }
+
+    // -lin + beta * sqrt(reg)
+    float lin = 0;
+    for (int64_t i = 0 ; i< N; i++) {
+        a[i] = get_a(b[i]);
+        lin += a[i] * C_data[i];
+    }
+    float reg = 0;
+    for (int64_t i = 0; i < N; i++)
+        for (int64_t j = 0; j < N; j++)
+            reg += a[i] * a[j] * Vinv_data[i * N + j];
+
+    double b_sum = 0;
+    for (int64_t i = 0; i < N; i++) {
+        auto delta = get_obj(C_data[i], b_data[i]) / w_data[i];
+        q.push(std::make_pair(delta, i));
+        b_sum += b_data[i] * w_data[i];
+    }
+
+    while (b_sum > target) {        // Pick up the smallest increment (largest decrement)
+        assert(!q.empty());
+        auto i = q.top().second;
+        q.pop();
+        b_data[i] -= 1;
+        b_sum -= w_data[i];
+        if (b_data[i] > 1) {
+            auto delta = get_obj(C_data[i], b_data[i]) / w_data[i];
+            q.push(std::make_pair(delta, i));
+        }
+    }
+    return b;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("calc_precision", &calc_precision, "calc_precision");
   m.def("calc_precision_dp", &calc_precision_dp, "calc_precision_dp");

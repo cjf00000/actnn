@@ -4,8 +4,8 @@ import actnn.cpp_extension.calc_precision as ext_calc_precision
 from sklearn.linear_model import Ridge
 
 
-# Automatically compute the precision for each tensor
-class AutoPrecision:
+# Automatically compute the precision for each tensor with linear bandits
+class AutoPrecisionUCB:
     """
     Usage diagram:
 
