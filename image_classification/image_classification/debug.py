@@ -237,8 +237,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     gcnt = 0
     for name, module in m.named_modules():
         if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
-            # id = str(type(module)) + str(module.scheme.rank)
-            id = str(np.random.rand())
+            id = str(type(module)) + str(module.scheme.rank)
+            # id = str(np.random.rand())
             if not id in id2group:
                 print(id)
                 id2group[id] = gcnt
@@ -254,25 +254,28 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     # exit(0)
 
     # Test AutoPrecision
-    from actnn import AutoPrecision
+    from actnn import AutoPrecision, AutoPrecisionUCB
     dims = torch.tensor(dims, dtype=torch.long)
-    ap = AutoPrecision(2, groups, dims, warmup_iters=150)
+    # ap = AutoPrecision(2, groups, dims, warmup_iters=150)
+    ap = AutoPrecisionUCB(2, groups, dims, warmup_iters=150)
 
     # Warmup (collect training data)
-    # cnt = 0
-    # for epoch in range(2):
-    #     data_iter = enumerate(val_loader)
-    #     for i, (input, target, _) in tqdm(data_iter):
-    #         cnt += 1
-    #
-    #         input = input.cuda()
-    #         target = target.cuda()
-    #
-    #         for l in range(L):
-    #             schemes[l].bits = ap.bits[l]
-    #
-    #         grad = bp(input, target)
-    #         ap.iterate(grad)
+    cnt = 0
+    for epoch in range(3):
+        data_iter = enumerate(val_loader)
+        for i, (input, target, _) in tqdm(data_iter):
+            cnt += 1
+
+            input = input.cuda()
+            target = target.cuda()
+
+            for l in range(L):
+                schemes[l].bits = ap.bits[l]
+
+            print(ap.bits)
+
+            _, grad = bp(input, target)
+            ap.iterate(grad)
 
     # collect testing data
     X = []
@@ -288,17 +291,18 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     batch_grad = 0
     data_iter = enumerate(val_loader)
     cnt = 0
-    for i, (input, target, _) in tqdm(data_iter):
-        cnt += 1
-        input = input.cuda()
-        target = target.cuda()
-        _, grad = bp(input, target)
-        batch_grad = batch_grad + grad
+    # for i, (input, target, _) in tqdm(data_iter):
+    #     cnt += 1
+    #     input = input.cuda()
+    #     target = target.cuda()
+    #     _, grad = bp(input, target)
+    #     batch_grad = batch_grad + grad
 
-    batch_grad = batch_grad / cnt
+    # batch_grad = batch_grad / cnt
 
     b = torch.load('b.pkl')
-    for epoch in range(100):
+    print(b)
+    for epoch in range(0):
         data_iter = enumerate(val_loader)
         for l in range(L):
             schemes[l].bits = ap.bits[l]
@@ -365,7 +369,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
 
         print('error ', error)
 
-        if epoch % 1 == 0:
+        if epoch % 10 == 0:
             torch.save([bits, y, es, isizes, gsizes, losses0, losses1, qerrors, iscales], 'test_set.pkl')
 
     # Compute Quant Var
@@ -374,21 +378,21 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     quant_var = 0
     overall_var = 0
     data_iter = enumerate(val_loader)
-    # ap.adaptive = False
-    # for i, (input, target, _) in tqdm(data_iter):
-    #     input = input.cuda()
-    #     target = target.cuda()
-    #     grad = bp(input, target)
-    #     ap.iterate(grad)
-    #     break
-    #
+    ap.adaptive = False
+    for i, (input, target, _) in tqdm(data_iter):
+        input = input.cuda()
+        target = target.cuda()
+        _, grad = bp(input, target)
+        ap.iterate(grad)
+        break
+
     for l in range(L):
         # schemes[l].bits = ap.bits[l]
         schemes[l].bits = b[l]
     #
-    # for l in range(L):
-    #     print(layer_names[l], ap.bits[l])
-    # print(ap.C)
+    for l in range(L):
+        print(layer_names[l], schemes[l].bits)
+    print(ap.C)
     #
     for i, (input, target, _) in tqdm(data_iter):
         cnt += 1
