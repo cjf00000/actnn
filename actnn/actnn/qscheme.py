@@ -76,6 +76,7 @@ class QScheme(object):
             mn = torch.ones_like(mn) * mn.min()
             mx = torch.ones_like(mx) * mx.max()
 
+        self.isize = ((mx - mn)**2).mean()
         # Average range over pixels     G * ||R_n||^2 / I
         Range_sqr = torch.norm((mx - mn).view(N, -1), dim=1).float().square() * (config.group_size / num_pixels)
 

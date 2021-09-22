@@ -8,7 +8,7 @@ from . import logger as log
 from . import resnet as models
 from . import utils
 from .debug import get_var_black_box, test_autoprecision
-from actnn import config, QScheme, QModule, get_memory_usage, compute_tensor_bytes, exp_recorder, AutoPrecision
+from actnn import config, QScheme, QModule, get_memory_usage, compute_tensor_bytes, exp_recorder, AutoPrecision, AutoPrecisionUCB
 from copy import copy
 from tqdm import tqdm
 
@@ -179,7 +179,7 @@ def lr_exponential_policy(base_lr, warmup_length, epochs, final_multiplier=0.001
 
 
 
-def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_multiplier = 1):
+def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_multiplier = 1, schemes=None):
     def _step(input, target, optimizer_step = True, ap=None):
         input_var = Variable(input)
         target_var = Variable(target)
@@ -234,7 +234,9 @@ def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_
                 grad.append(param.grad.detach().ravel())
         grad = torch.cat(grad, 0)
 
-        ap.iterate(grad)
+        deltas = torch.tensor([scheme.delta for scheme in schemes])
+        gsizes = torch.tensor([scheme.gsize for scheme in schemes])
+        ap.iterate(grad, deltas, gsizes)
 
         if optimizer_step:
             opt = optimizer.optimizer if isinstance(optimizer, FP16_Optimizer) else optimizer
@@ -273,7 +275,17 @@ def train(train_loader, model_and_loss, optimizer, lr_scheduler, fp16, logger, e
                 if model_and_loss.arch[1] == 'quantize' else 'exact')
         exp_recorder.record("model_only", usage / GB, 2)
 
-    step = get_train_step(model_and_loss, optimizer, fp16, use_amp = use_amp, batch_size_multiplier = batch_size_multiplier)
+    if hasattr(model_and_loss.model, 'module'):
+        m = model_and_loss.model.module
+    else:
+        m = model_and_loss.model
+
+    schemes = []
+    for name, module in m.named_modules():
+        if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
+            schemes.append(module.scheme)
+
+    step = get_train_step(model_and_loss, optimizer, fp16, use_amp = use_amp, batch_size_multiplier = batch_size_multiplier, schemes=schemes)
 
     model_and_loss.train()
     print('Training mode ', config.training)
@@ -461,6 +473,7 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
     for name, module in m.named_modules():
         if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
             id = str(type(module)) + str(module.scheme.rank)
+            # id = str(np.random.rand())
             if not id in id2group:
                 print(id)
                 id2group[id] = gcnt
@@ -474,6 +487,7 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
     L = len(groups)
 
     dims = torch.tensor(dims, dtype=torch.long)
+    # ap = AutoPrecisionUCB(2, groups, dims)
     ap = AutoPrecision(2, groups, dims)
 
     epoch_iter = range(start_epoch, epochs)
@@ -511,7 +525,8 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
 
         # if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         #     logger.end()
+        print('Reward: ', ap.reward)
 
     if skip_training and skip_validation:
         # get_var_black_box(model_and_loss, optimizer, train_loader, 10)
-        test_autoprecision(model_and_loss, optimizer, train_loader, 10)
+        test_autoprecision(model_and_loss, optimizer, train_loader, val_loader, 10)

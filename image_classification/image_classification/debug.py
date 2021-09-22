@@ -196,7 +196,7 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     print('Sample Var = {}, quant_var = {}, Overall_var = {}'.format(sample_var, quant_var.sum(), overall_var.sum()))
 
 
-def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
+def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_batches=10):
     config.activation_compression_bits = [2]
     config.initial_bits = 2
     config.perlayer = False
@@ -237,7 +237,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     gcnt = 0
     for name, module in m.named_modules():
         if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
-            id = str(type(module)) + str(module.scheme.rank)
+            id = str(type(module)) + str(module.scheme.rank) + str(name == 'conv1')
             # id = str(np.random.rand())
             if not id in id2group:
                 print(id)
@@ -256,12 +256,12 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     # Test AutoPrecision
     from actnn import AutoPrecision, AutoPrecisionUCB
     dims = torch.tensor(dims, dtype=torch.long)
-    # ap = AutoPrecision(2, groups, dims, warmup_iters=150)
-    ap = AutoPrecisionUCB(2, groups, dims, warmup_iters=150)
+    ap = AutoPrecision(2, groups, dims, warmup_iters=150)
+    # ap = AutoPrecisionUCB(2, groups, dims, warmup_iters=150)
 
     # Warmup (collect training data)
     cnt = 0
-    for epoch in range(3):
+    for epoch in range(2):
         data_iter = enumerate(val_loader)
         for i, (input, target, _) in tqdm(data_iter):
             cnt += 1
@@ -275,7 +275,9 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
             print(ap.bits)
 
             _, grad = bp(input, target)
-            ap.iterate(grad)
+            deltas = torch.tensor([scheme.delta for scheme in schemes])
+            gsizes = torch.tensor([scheme.gsize for scheme in schemes])
+            ap.iterate(grad, deltas, gsizes)
 
     # collect testing data
     X = []
@@ -297,7 +299,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     #     target = target.cuda()
     #     _, grad = bp(input, target)
     #     batch_grad = batch_grad + grad
-
+    #
     # batch_grad = batch_grad / cnt
 
     b = torch.load('b.pkl')
@@ -375,10 +377,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
     # Compute Quant Var
     cnt = 0
     num_samples = 3
-    quant_var = 0
-    overall_var = 0
-    data_iter = enumerate(val_loader)
     ap.adaptive = False
+    data_iter = enumerate(val_loader)
     for i, (input, target, _) in tqdm(data_iter):
         input = input.cuda()
         target = target.cuda()
@@ -387,31 +387,81 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, num_batches=20):
         break
 
     for l in range(L):
-        # schemes[l].bits = ap.bits[l]
-        schemes[l].bits = b[l]
-    #
+        schemes[l].bits = ap.bits[l]
+        # schemes[l].bits = b[l]
+
     for l in range(L):
-        print(layer_names[l], schemes[l].bits)
-    print(ap.C)
-    #
-    for i, (input, target, _) in tqdm(data_iter):
-        cnt += 1
-        if cnt == 10:
-            break
+        if 'conv' in layer_names[l] or 'fc' in layer_names[l]:
+            print(layer_names[l], schemes[l].bits, ap.C[l])
+    for l in range(L):
+        if 'bn' in layer_names[l]:
+            print(layer_names[l], schemes[l].bits, ap.C[l])
 
-        input = input.cuda()
-        target = target.cuda()
 
-        config.compress_activation = False
-        _, exact_grad = bp(input, target)
-        config.compress_activation = True
-        for iter in range(num_samples):
-            _, grad = bp(input, target)
-            quant_var = quant_var + (exact_grad - grad) ** 2
-            overall_var = overall_var + (grad - batch_grad) ** 2
+    # for l in range(L):
+    #     schemes[l].bits = 2
 
-    quant_var /= (num_batches * num_samples)
-    overall_var /= (num_batches * num_samples)
+    for l in range(1):
+        quant_var = 0
+        overall_var = 0
+        data_iter = enumerate(test_loader)
+        # schemes[l].bits = 1
+        cnt = 0
 
-    print('quant_var = {}, Overall_var = {}'
-          .format(quant_var.sum(), overall_var.sum()))
+        for i, (input, target, _) in tqdm(data_iter):
+        # for i, (input, target, _) in data_iter:
+            cnt += 1
+            if cnt == num_batches:
+                break
+
+            input = input.cuda()
+            target = target.cuda()
+
+            config.compress_activation = False
+            _, exact_grad = bp(input, target)
+            config.compress_activation = True
+            for iter in range(num_samples):
+                _, grad = bp(input, target)
+                quant_var = quant_var + ((exact_grad - grad) ** 2).sum()
+                # print(((exact_grad - grad) ** 2).sum())
+                overall_var = overall_var + (grad - batch_grad) ** 2
+
+        quant_var /= (num_batches * num_samples)
+        overall_var /= (num_batches * num_samples)
+        # schemes[l].bits = 8
+
+        print(l, layer_names[l], quant_var.sum().item(), schemes[l].delta.item(), flush=True)
+
+        # print('quant_var = {}, Overall_var = {}'
+        #       .format(quant_var.sum(), overall_var.sum()))
+
+    # Calculate delta
+    for l in range(L):
+        schemes[l].bits = 12
+
+    data_iter = enumerate(val_loader)
+    for i, (input, target, _) in data_iter:
+        break
+
+    input = input.cuda()
+    target = target.cuda()
+
+    deltas = torch.zeros(L, 8)
+    for l in range(0):
+        for b in range(1, 9):
+            schemes[l].bits = b
+            bp(input, target)
+            deltas[l, b-1] = schemes[l].delta
+
+        schemes[l].bits = 12
+        print(deltas[l])
+
+    # torch.save(deltas, 'deltas.pkl')
+
+    isizes = torch.zeros(L)
+    gsizes = torch.zeros(L)
+    bp(input, target)
+    for l in range(L):
+        isizes[l] = schemes[l].isize
+        gsizes[l] = schemes[l].gsize
+    # torch.save([isizes, gsizes], 'sizes.pkl')

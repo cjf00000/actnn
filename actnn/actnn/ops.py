@@ -154,7 +154,6 @@ class convnd(Function):
         ctx.scheme = scheme
         ctx.saved = quantized, weight, bias
         ctx.other_args = (input.shape, stride, padding, dilation, groups)
-        ctx.scheme.isize = (input ** 2).sum()
 
         empty_cache(config.empty_cache_threshold)
 
@@ -176,7 +175,7 @@ class convnd(Function):
         if ctx.scheme:
             ctx.scheme.set_scale(grad_output)
 
-        ctx.scheme.gsize = (grad_output ** 2).sum()
+        ctx.scheme.gsize = (grad_output ** 2).sum() / ctx.scheme.dim
         q_input_shape, stride, padding, dilation, groups = ctx.other_args
         padding = aug(padding)
         stride = aug(stride)
@@ -396,7 +395,6 @@ class linear(Function):
         empty_cache(config.empty_cache_threshold)
 
         ctx.scheme = scheme
-        ctx.scheme.isize = (input ** 2).sum()
         ctx.saved = quantized, weight, bias
         ctx.other_args = input.shape
         ctx.debug_input = input
@@ -408,7 +406,7 @@ class linear(Function):
         if ctx.scheme:
             ctx.scheme.set_scale(grad_output)
 
-        ctx.scheme.gsize = (grad_output ** 2).sum()
+        ctx.scheme.gsize = (grad_output ** 2).sum() / ctx.scheme.dim
         quantized, weight, bias = ctx.saved
         q_input_shape = ctx.other_args
 
@@ -489,7 +487,7 @@ class batch_norm(Function):
         q_input_shape = ctx.other_args
 
         input = dequantize_activation(quantized, q_input_shape)
-        ctx.scheme.gsize = (grad_output ** 2).sum()
+        ctx.scheme.gsize = (grad_output ** 2).sum() / ctx.scheme.dim
         ctx.scheme.delta = ((input - ctx.debug_input) ** 2).sum()
         ctx.scheme.ref_delta = (ctx.debug_input ** 2).sum()
         del quantized, ctx.saved

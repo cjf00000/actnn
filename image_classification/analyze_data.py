@@ -20,58 +20,50 @@ else:
     gsizes = torch.stack([torch.stack(s) for s in gsizes])  # [sample, batch, L]
     torch.save([bits, y, es, isizes, gsizes, losses0, losses1, qerrors, iscales], 'test_set_flatten.pkl')
 
+bits[bits >= 8] = 8
 layer_names, dims = pickle.load(open('layer_names.pkl', 'rb'))
 dims = torch.tensor(dims, dtype=torch.int64)
 amt_descent = (losses0 - losses1).mean(1)
 amt_descent_noisy = losses0[:, :-1] - losses1[:, 1:]
 
+deltas = torch.load('deltas.pkl')
+isizes, gsizes = torch.load('sizes.pkl')
+
+delta_scale = deltas[:, :1] + 1e-9
+deltas = deltas / delta_scale   # Preprocessing transformations
+gsizes = gsizes * 1e7
+
 N, B, L = qerrors.shape
+
+# Preprocess data
+P = torch.zeros(L, 8)
+for l in range(L):
+    if 'conv' in layer_names[l] or 'downsample' in layer_names[l]:
+        P[l, 0] = 1
+        P[l, 4] = gsizes[l]
+    elif 'relu' in layer_names[l]:
+        P[l, 1] = 1
+        P[l, 5] = gsizes[l]
+    elif 'bn' in layer_names[l]:
+        P[l, 2] = 1
+        P[l, 6] = gsizes[l]
+    else:
+        P[l, 3] = 1
+        P[l, 7] = gsizes[l]
+
+Xbits = torch.zeros(N, L)
+for n in range(N):
+    for l in range(L):
+        Xbits[n, l] = deltas[l, bits[n, l] - 1]
+
+# X = Xbits
+X = Xbits @ P
+
 num_train = int(N * 0.6)
-num_samples = 1000
+num_samples = 10000
 
 y_train = y[:num_train]
 y_test = y[num_train:]
-# y_train = amt_descent[:num_train] * 10000
-# y_test = amt_descent[num_train:] * 10000
-
-# Preprocess data
-Xbits = 2 ** (-2 * bits.float())
-Xq = qerrors.mean(1)
-Xq = Xq / (Xq.max(0, keepdims=True)[0] + 1e-7)
-
-# X_train = Xbits[:num_train]
-# X_test = Xbits[num_train:]
-# X = Xq
-X = Xbits
-
-# Group the layers
-membership = torch.zeros(L, 4)
-for l in range(L):
-    if 'conv' in layer_names[l] or 'downsample' in layer_names[l]:
-        membership[l, 0] = 1
-    elif 'relu' in layer_names[l]:
-        membership[l, 1] = 1
-    elif 'bn' in layer_names[l]:
-        membership[l, 2] = 1
-    else:
-        membership[l, 3] = 1
-
-layer_idx = torch.arange(1, L+1).float().view(L, 1)
-isizes = isizes.mean([0, 1]) / dims
-gsizes = gsizes.mean([0, 1]) / dims
-isizes = (isizes / dims).view(L, 1)
-gsizes = (gsizes / dims).view(L, 1) * 1e13
-gsizes[0] = 0
-gsizes[-1] = 0
-
-# X = torch.cat([X @ membership, X @ layer_idx, X @ dims.view(-1, 1).float()], 1)
-# X = torch.cat([X @ membership, X @ layer_idx], 1)
-X = torch.cat([X @ membership], 1)
-# X = torch.cat([X @ membership, X @ layer_idx, X @ isizes, X @ gsizes], 1)
-# X = torch.cat([X @ membership, X @ layer_idx, X @ layer_idx**2], 1)
-# X = X @ membership
-# normalize
-# X = X / (X.max(0)[0] + 1e-9)
 
 X_train = X[:num_train]
 X_test = X[num_train:]
@@ -85,69 +77,26 @@ y_train = torch.tensor([es[indices[i]][s_indices[i]] for i in range(num_samples)
 clf = Ridge(alpha=1.0, fit_intercept=True)
 clf.fit(X_train, y_train)
 
-b = torch.ones(L, dtype=torch.int32) * 8
-C = membership @ torch.tensor(clf.coef_[:4], dtype=torch.float32) #+ \
-#     #layer_idx.view(-1) * clf.coef_[4] #+ isizes.view(-1) * clf.coef_[5] + gsizes.view(-1) * clf.coef_[6]
+C = P @ torch.tensor(clf.coef_, dtype=torch.float32).view(-1, 1)
 # C = torch.tensor(clf.coef_, dtype=torch.float32)
-b = ext_calc_precision.calc_precision(b, C, dims, 2*dims.sum())     # TODO how good is this selection algorithm...?
-# print(b)
+for l in range(L):
+    if 'conv' in layer_names[l] or 'fc' in layer_names[l]:
+        print(layer_names[l], C[l].item(),
+              gsizes[l].item(), (C[l] / gsizes[l]).item())
+
+for l in range(L):
+    if 'bn' in layer_names[l]:
+        print(layer_names[l], C[l].item(),
+              gsizes[l].item(), (C[l] / gsizes[l]).item())
+
+b = torch.ones(L, dtype=torch.int32) * 8
+b = ext_calc_precision.calc_precision_table(b, deltas, C, dims, 2*dims.sum())     # TODO how good is this selection algorithm...?
+print(b)
 torch.save(b, 'b.pkl')
-# # exit(0)
-#
-#
-print(clf.coef_)
-# for l in range(L):
-#     print(layer_names[l], C[l], '\t ', b[l].item())
+
 print('Intercept: ', clf.intercept_)
 
 y_pred = clf.predict(X_test)
 # print(np.stack([y_test, y_pred], 1))
 
 print('RMSE: ', np.sqrt(((y_test - y_pred)**2).mean()))
-#
-# # X_best = (2 ** (-2 * b.float())).view(1, -1)
-# # #X_best = torch.cat([X_best @ membership, X_best @ layer_idx, X_best @ isizes, X_best @ gsizes], 1)
-# # X_best = torch.cat([X_best @ membership, X_best @ layer_idx], 1)
-# # y_best = clf.predict(X_best)
-# # print(y_best)
-#
-# # # b = torch.ones_like(b) * 2
-#
-#
-# # Solve the Ridge problem manually
-# X_train = torch.cat([X_train, torch.ones([X_train.shape[0], 1])], 1)
-# V = X_train.t() @ X_train + torch.eye(X_train.shape[1])
-# b = (y_train.view(-1, 1) * X_train).sum(0)
-# theta = V.inverse() @ b
-#
-# N_train = X_train.shape[0]
-# delta = 0.1
-# beta = 1.0 + np.sqrt(2 * np.log(1 / delta) + L * np.log(1 + N_train / L))
-# beta = 0.0
-# print(beta)
-# # beta = 0.1
-# b = torch.ones(L, dtype=torch.int32) * 8
-# Vinv = V.inverse().contiguous()
-# b = ext_calc_precision.calc_precision_ucb(b, C, beta, Vinv, dims, 2*dims.sum())
-#
-# for l in range(L):
-#     print(layer_names[l], C[l], '\t ', b[l].item())
-#
-# X_best = (2 ** (-2 * b.float())).view(1, -1)
-# y_best = clf.predict(X_best)
-# print(y_best)
-#
-# # b = torch.ones(L, dtype=torch.int32) * 2
-# torch.save(b, 'b.pkl')
-
-# C = torch.load('c.pkl')
-# C = C.view(-1, 1)
-# coef = torch.tensor(clf.coef_).float()
-# c = membership @ torch.tensor(clf.coef_[:4], dtype=torch.float32) + \
-#     layer_idx.view(-1) * clf.coef_[4] + isizes.view(-1) * clf.coef_[5] + gsizes.view(-1) * clf.coef_[6]
-# # isizes = isizes * 1000
-# # gsizes = gsizes * 1000
-# u = torch.cat([C, c.view(-1, 1), membership, layer_idx, isizes, gsizes, isizes * gsizes], 1)
-# for line in u:
-#     if line[2] > 0:
-#         print('\t'.join([str(elem.item()) for elem in line]))

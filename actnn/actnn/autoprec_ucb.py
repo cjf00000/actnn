@@ -59,6 +59,8 @@ class AutoPrecisionUCB:
         self.membership = torch.zeros(self.L, self.num_groups)
         for i in range(self.L):
             self.membership[i, groups[i]] = 1
+
+        self.reward = 0
         # self.membership[self.L, self.num_groups] = 1
 
     def generate_ls(self, grad):
@@ -84,6 +86,7 @@ class AutoPrecisionUCB:
         # Update the underlying linear system
         if self.iter >= self.warmup_iters:
             X_row, y_row = self.generate_ls(grad)
+            self.reward += y_row
             if y_row < 1e6:
                 self.X.append(X_row)
                 self.y.append(y_row)
@@ -97,7 +100,8 @@ class AutoPrecisionUCB:
         self.beta1 = self.momentum * self.beta1 + (1 - self.momentum)
 
         if self.iter >= 2 * self.warmup_iters:
-            self.update_coef()
+            # self.update_coef()
+            pass
 
     def update_coef(self):
         """
@@ -123,14 +127,15 @@ class AutoPrecisionUCB:
         beta = 1.0 + np.sqrt(2 * np.log(1 / self.delta) + G * np.log(1 + N / G))
         if not self.adaptive:
             beta = 0            # Disable exploration
+        # beta = 100 * beta
 
-        print(self.C.shape, theta.shape, beta)
+        # print(self.C.shape, theta.shape, beta)
         self.bits = torch.ones(self.L, dtype=torch.int32) * self.max_bits
         groups = torch.tensor(self.groups, dtype=torch.int64)
         self.bits = ext_calc_precision.calc_precision_ucb_g(self.bits,
                     theta, beta, Vinv, self.dims, groups, G, self.total_bits)
 
         min_coef = theta.min()
-        print('Coefficients: ', theta)
+        # print('Coefficients: ', theta)
         if min_coef < 0:
             print('ActNN Warning: negative coefficient detected ', min_coef)
