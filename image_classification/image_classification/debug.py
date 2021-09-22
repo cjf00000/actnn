@@ -237,7 +237,7 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_b
     gcnt = 0
     for name, module in m.named_modules():
         if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
-            id = str(type(module)) + str(module.scheme.rank) + str(name == 'conv1')
+            id = str(type(module)) + str(module.scheme.rank) #+ str(name == 'conv1')
             # id = str(np.random.rand())
             if not id in id2group:
                 print(id)

@@ -488,7 +488,7 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
 
     dims = torch.tensor(dims, dtype=torch.long)
     # ap = AutoPrecisionUCB(2, groups, dims)
-    ap = AutoPrecision(2, groups, dims)
+    ap = AutoPrecision(8, groups, dims, adaptive=False)
 
     epoch_iter = range(start_epoch, epochs)
     if logger is not None:
@@ -525,7 +525,7 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
 
         # if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         #     logger.end()
-        print('Reward: ', ap.reward)
+        print('Reward: ', ap.reward, flush=True)
 
     if skip_training and skip_validation:
         # get_var_black_box(model_and_loss, optimizer, train_loader, 10)

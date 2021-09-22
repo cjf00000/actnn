@@ -18,8 +18,8 @@ class AutoPrecision:
     # TODO make delta a moving average...
     """
     def __init__(self, bits, groups, dims,
-                 momentum=0.999, warmup_iters=1000, update_interval=10, sample_size=1000,
-                 max_bits=8, adaptive=True, reg=1.0):
+                 momentum=0.999, warmup_iters=100, update_interval=10, sample_size=1000,
+                 max_bits=8, adaptive=True, reg=1.0, delta_momentum=0.9):
         """
         :param bits: average number of bits (Python int)
         :param groups: group id of each tensor (Python list)
@@ -57,17 +57,22 @@ class AutoPrecision:
         self.reg = reg
         self.reward = 0
         self.deltas = torch.zeros(self.L, 8)
+        self.delta_beta = torch.zeros(self.L, 8)
         self.delta_normal = torch.ones(self.L, 1) * 1e9
+        self.delta_momentum = delta_momentum
         # self.refresh_bits()
+
+    def get_delta(self):
+        return self.deltas / (self.delta_beta + 1e-9)
 
     def refresh_bits(self):
         total_bits = self.total_bits
 
         self.bits = torch.ones(self.L, dtype=torch.int32) * self.max_bits
-        print((self.deltas / self.delta_normal)[0])
-        print((self.deltas / self.delta_normal)[-1])
-        torch.save([self.deltas, self.delta_normal], 'delta_normal.pkl')
-        self.bits = ext_calc_precision.calc_precision_table(self.bits, self.deltas / self.delta_normal,
+        # print((self.deltas / self.delta_normal)[0])
+        # print((self.deltas / self.delta_normal)[-1])
+        # torch.save([self.deltas, self.delta_normal], 'delta_normal.pkl')
+        self.bits = ext_calc_precision.calc_precision_table(self.bits, self.get_delta() / self.delta_normal,
                                                       self.C, self.dims, total_bits)
 
         # Collect some data
@@ -86,12 +91,13 @@ class AutoPrecision:
             new_bits = torch.randint_like(self.bits, 2) * 7 + 1
             self.bits = self.bits * (1 - mask) + mask * new_bits
 
-        torch.save([self.C, self.deltas / self.delta_normal, self.bits], 'used_b.pkl')
+        # torch.save([self.C, self.deltas / self.delta_normal, self.bits], 'used_b.pkl')
 
     def generate_ls(self, grad):
         X_row = [0 for i in range(self.L)]
+        delta = self.get_delta()
         for l in range(self.L):
-            X_row[l] += self.deltas[l, self.bits[l] - 1]
+            X_row[l] += delta[l, self.bits[l] - 1]
 
         y_row = ((grad - self.batch_grad_ema / self.beta1)**2).sum()
         return X_row, y_row
@@ -112,8 +118,13 @@ class AutoPrecision:
         # Collect deltas
         if deltas is not None:
             for l in range(self.L):
-                self.deltas[l, self.bits[l] - 1] = deltas[l]
-        self.delta_normal = self.deltas[:, self.abits-1:self.abits] * 2 ** (2 * (self.abits - 1)) + 1e-9
+                self.deltas[l, self.bits[l] - 1] = self.deltas[l, self.bits[l] - 1] * self.delta_momentum + \
+                                                   (1 - self.delta_momentum) * deltas[l]
+                self.delta_beta[l, self.bits[l] - 1] = self.delta_beta[l, self.bits[l] - 1] * self.delta_momentum + \
+                                                       (1 - self.delta_momentum)
+
+        delta = self.get_delta()
+        self.delta_normal = delta[:, self.abits-1:self.abits] * 2 ** (2 * (self.abits - 1)) + 1e-9
         # self.delta_normal = self.deltas.max(1, keepdims=True)[0] + 1e-9
 
         if gsizes is not None:
@@ -173,17 +184,16 @@ class AutoPrecision:
         intercept = coefs[-1]
         coefs = coefs[:-1]
 
-        print('Intercept: ', intercept)
-        C = P @ coefs
-        C0 = P[:, :self.num_groups] @ coefs[:self.num_groups]
-        for l in range(self.L):
-            print(C[l], C0[l])
+        # print('Intercept: ', intercept)
+        # C = P @ coefs
+        # C0 = P[:, :self.num_groups] @ coefs[:self.num_groups]
+        # for l in range(self.L):
+        #     print(C[l], C0[l])
 
-        torch.save([X, y, self.deltas, self.delta_normal, coefs, intercept, P, self.gsizes], 'linear_system.pkl')
-
-        min_coef = coefs.min()
-        print('Coefficients: ', coefs)
-        if min_coef < 0:
-            print('ActNN Warning: negative coefficient detected ', min_coef)
+        # torch.save([X, y, self.deltas, self.delta_normal, coefs, intercept, P, self.gsizes], 'linear_system.pkl')
 
         self.C = P @ coefs
+        min_coef = self.C.min()
+        # print('Coefficients: ', coefs)
+        if min_coef < 0:
+            print('ActNN Warning: negative coefficient detected ', min_coef)
