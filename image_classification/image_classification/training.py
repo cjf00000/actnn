@@ -24,6 +24,7 @@ except ImportError:
 
 MB = 1024**2
 GB = 1024**3
+quant_noise = 0.0
 
 class ModelAndLoss(nn.Module):
     def __init__(self, arch, num_classes, loss, pretrained_weights=None, cuda=True, fp16=False):
@@ -180,7 +181,7 @@ def lr_exponential_policy(base_lr, warmup_length, epochs, final_multiplier=0.001
 
 
 def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_multiplier = 1, schemes=None):
-    def _step(input, target, optimizer_step = True, ap=None):
+    def _step(input, target, optimizer_step = True, ap=None, compare=False):
         input_var = Variable(input)
         target_var = Variable(target)
 
@@ -188,6 +189,20 @@ def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_
             print("========== Init Data Loader ===========")
             init_mem = get_memory_usage(True)
             exp_recorder.record("data_loader", init_mem / GB - exp_recorder.val_dict['model_only'], 2)
+
+        if compare:
+            config.compress_activation = False
+            loss, output = model_and_loss(input_var, target_var)
+            loss.backward()
+            grad = []
+            for param in model_and_loss.model.model.parameters():
+                if param.grad is not None:
+                    grad.append(param.grad.detach().ravel())
+            exact_grad = torch.cat(grad, 0)
+            config.compress_activation = True
+            optimizer.zero_grad()
+        else:
+            exact_grad = None
 
         loss, output = model_and_loss(input_var, target_var)
         prec1, prec5 = torch.zeros(1), torch.zeros(1) #utils.accuracy(output.data, target, topk=(1, 5))
@@ -233,6 +248,10 @@ def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_
             if param.grad is not None:
                 grad.append(param.grad.detach().ravel())
         grad = torch.cat(grad, 0)
+
+        if compare:
+            global quant_noise
+            quant_noise += ((grad - exact_grad)**2).sum()
 
         deltas = torch.tensor([scheme.delta for scheme in schemes])
         gsizes = torch.tensor([scheme.gsize for scheme in schemes])
@@ -311,8 +330,9 @@ def train(train_loader, model_and_loss, optimizer, lr_scheduler, fp16, logger, e
         optimizer_step = ((i + 1) % batch_size_multiplier) == 0
         for l in range(len(schemes)):
             schemes[l].bits = ap.bits[l]
+            # schemes[l].bits = 2
 
-        loss, _, prec1, prec5 = step(input, target, optimizer_step = optimizer_step, ap=ap)
+        loss, _, prec1, prec5 = step(input, target, optimizer_step = optimizer_step, ap=ap, compare=(i%100==0))
 
         it_time = time.time() - end
 
@@ -487,8 +507,8 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
     L = len(groups)
 
     dims = torch.tensor(dims, dtype=torch.long)
-    # ap = AutoPrecisionUCB(2, groups, dims)
-    ap = AutoPrecision(8, groups, dims, adaptive=False)
+    ap = AutoPrecision(2, groups, dims)
+    # ap = AutoPrecision(8, groups, dims, adaptive=False)
 
     epoch_iter = range(start_epoch, epochs)
     if logger is not None:
@@ -525,7 +545,8 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
 
         # if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         #     logger.end()
-        print('Reward: ', ap.reward, flush=True)
+        global quant_noise
+        print('Reward: ', ap.reward, 'Quant noise ', quant_noise, flush=True)
 
     if skip_training and skip_validation:
         # get_var_black_box(model_and_loss, optimizer, train_loader, 10)
