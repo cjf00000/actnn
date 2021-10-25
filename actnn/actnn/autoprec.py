@@ -113,6 +113,8 @@ class AutoPrecision:
         - Deltas is a vector of quantization error:
           deltas[l] = ||Q(a_l) - a_l||^2, if not available, use 2^(-2b)
         - Gsizes[l] = (gradient**2).mean()
+          y = op(a, x), need to know loss'y
+          loss'x = g(loss'y, a)
           If not available, use 1
         """
         # Collect deltas
@@ -125,6 +127,7 @@ class AutoPrecision:
 
         delta = self.get_delta()
         self.delta_normal = delta[:, self.abits-1:self.abits] * 2 ** (2 * (self.abits - 1)) + 1e-9
+        # self.delta_normal = delta[:, self.abits - 1].std() * 2 ** (2 * (self.abits - 1)) + 1e-9
         # self.delta_normal = self.deltas.max(1, keepdims=True)[0] + 1e-9
 
         if gsizes is not None:
