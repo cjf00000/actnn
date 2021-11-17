@@ -56,8 +56,8 @@ class AutoPrecision:
         self.sample_size = sample_size
         self.reg = reg
         self.reward = 0
-        self.deltas = torch.zeros(self.L, 8)
-        self.delta_beta = torch.zeros(self.L, 8)
+        self.deltas = torch.rand(self.L, 8)
+        self.delta_beta = torch.ones(self.L, 8) * 0.01
         self.delta_normal = torch.ones(self.L, 1) * 1e9
         self.delta_momentum = delta_momentum
         # self.refresh_bits()
@@ -74,6 +74,10 @@ class AutoPrecision:
         # torch.save([self.deltas, self.delta_normal], 'delta_normal.pkl')
         self.bits = ext_calc_precision.calc_precision_table(self.bits, self.get_delta() / self.delta_normal,
                                                       self.C, self.dims, total_bits)
+
+        delta = self.get_delta() / self.delta_normal
+        # for l in range(5):
+        #     print(self.bits[l].item(), delta[l], self.deltas[l], self.delta_beta[l], self.delta_normal[l].item())
 
         # Collect some data
         # prob_dist = torch.tensor([0.1, 0.4, 0.25, 0.15, 0.0, 0.0, 0.0, 0.1])
@@ -140,7 +144,7 @@ class AutoPrecision:
         if self.iter >= self.warmup_iters:
             X_row, y_row = self.generate_ls(grad)
             self.reward += y_row
-            if y_row < 1e6:
+            if y_row < 1e12:
                 self.X.append(X_row)
                 self.y.append(y_row)
             if len(self.X) > self.sample_size:
@@ -177,13 +181,29 @@ class AutoPrecision:
         X = X @ P
         y = torch.tensor(self.y, dtype=torch.float32)
 
-        # Ridge Regression
+        # Ridge Regression & Bagging
         N = X.shape[0]
         X = torch.cat([X, torch.ones([N, 1])], 1)
         F = X.shape[1]
-        V = torch.eye(F) * self.reg + X.t() @ X
         Xy = (X * y.view(-1, 1)).sum(0)
-        coefs = V.inverse() @ Xy
+
+        # Bagging
+        coefs = []
+        for s in range(3):
+            idx = torch.randint(F, [F])
+            Xs = X[idx]
+            Xys = Xy[idx]
+            V = torch.eye(F) * self.reg + Xs.t() @ Xs
+            coefs.append(V.inverse() @ Xys)
+
+        coefs = torch.stack(coefs, 0)
+        coefs_mean = coefs.mean(0)
+        coefs_std = coefs.std(0)
+        alpha = -coefs_mean / coefs_std
+        m = torch.distributions.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
+        Z = 1 - m.cdf(alpha)
+        coefs = coefs_mean + m.log_prob(alpha).exp() / Z * coefs_std
+
         intercept = coefs[-1]
         coefs = coefs[:-1]
 
@@ -196,7 +216,9 @@ class AutoPrecision:
         # torch.save([X, y, self.deltas, self.delta_normal, coefs, intercept, P, self.gsizes], 'linear_system.pkl')
 
         self.C = P @ coefs
-        min_coef = self.C.min()
-        # print('Coefficients: ', coefs)
-        if min_coef < 0:
-            print('ActNN Warning: negative coefficient detected ', min_coef)
+        # min_coef = self.C.min()
+        print('Coefficients: ', coefs)
+        print(coefs_mean)
+        print(coefs_std)
+        # if min_coef < 0:
+        #     print('ActNN Warning: negative coefficient detected ', min_coef)

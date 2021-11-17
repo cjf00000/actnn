@@ -303,8 +303,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_b
     #
     # batch_grad = batch_grad / cnt
 
-    b = torch.load('b.pkl')
-    print(b)
+    # b = torch.load('b.pkl')
+    # print(b)
     for epoch in range(0):
         data_iter = enumerate(val_loader)
         for l in range(L):
