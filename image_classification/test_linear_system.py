@@ -14,20 +14,24 @@ y = torch.tensor(y)
 N = X.shape[0]
 # X = torch.cat([X, torch.ones([N, 1])], 1)
 F = X.shape[1]
-Xy = (X * y.view(-1, 1)).sum(0)
+
+X[:, 3:6] = 0
 
 # Bagging
 coefs = []
 for s in range(3):
-    idx = torch.randint(F, [F])
+    idx = torch.randint(N, [N])
     Xs = X[idx]
-    Xys = Xy[idx]
+    ys = y[idx]
+    Xys = (Xs * ys.view(-1, 1)).sum(0)
+    # Xys = Xy[idx]
     V = torch.eye(F) * 1 + Xs.t() @ Xs
     coefs.append(V.inverse() @ Xys)
 
 coefs = torch.stack(coefs, 0)
+print(coefs)
 coefs_mean = coefs.mean(0)
-coefs_std = coefs.std(0)
+coefs_std = coefs.std(0) + 1e-7
 alpha = -coefs_mean / coefs_std
 m = torch.distributions.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
 Z = 1 - m.cdf(alpha)

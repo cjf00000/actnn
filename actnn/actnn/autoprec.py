@@ -185,14 +185,14 @@ class AutoPrecision:
         N = X.shape[0]
         X = torch.cat([X, torch.ones([N, 1])], 1)
         F = X.shape[1]
-        Xy = (X * y.view(-1, 1)).sum(0)
 
         # Bagging
         coefs = []
         for s in range(3):
-            idx = torch.randint(F, [F])
+            idx = torch.randint(N, [N])
             Xs = X[idx]
-            Xys = Xy[idx]
+            ys = y[idx]
+            Xys = (Xs * ys.view(-1, 1)).sum(0)
             V = torch.eye(F) * self.reg + Xs.t() @ Xs
             coefs.append(V.inverse() @ Xys)
 
