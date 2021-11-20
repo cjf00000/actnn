@@ -198,10 +198,10 @@ class AutoPrecision:
 
         coefs = torch.stack(coefs, 0)
         coefs_mean = coefs.mean(0)
-        coefs_std = coefs.std(0)
+        coefs_std = coefs.std(0) + 1e-9
         alpha = -coefs_mean / coefs_std
         m = torch.distributions.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
-        Z = 1 - m.cdf(alpha)
+        Z = 1 - m.cdf(alpha) + 1e-9
         coefs = coefs_mean + m.log_prob(alpha).exp() / Z * coefs_std
 
         intercept = coefs[-1]
