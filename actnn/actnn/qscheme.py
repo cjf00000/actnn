@@ -29,6 +29,8 @@ class QScheme(object):
         self.depthwise_groups = depthwise_groups    # Depthwise separable conv
         self.layer = layer
         self.group = group
+        self.inject_noise = False
+        self.input = torch.tensor(1.0, requires_grad=True)
 
         # debug
         self.name = 'layer_{}'.format(QScheme.num_layers)

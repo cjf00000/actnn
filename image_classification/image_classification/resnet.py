@@ -293,6 +293,7 @@ class ResNetCifar(nn.Module):
         self.layer3 = self._make_layer(builder, block, 64, layers[2], stride=2)
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.fc = builder.linear(64 * block.expansion, num_classes)
+        self.dropout = nn.Dropout(p=0.1)
 
     def _make_layer(self, builder, block, planes, blocks, stride=1):
         downsample = None
@@ -315,6 +316,7 @@ class ResNetCifar(nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
+        # x = self.dropout(x)
         if self.bn1 is not None:
             x = self.bn1(x)
         x = self.relu(x)

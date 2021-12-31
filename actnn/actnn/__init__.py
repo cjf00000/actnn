@@ -9,4 +9,5 @@ from .qscheme import QScheme
 from .qbnscheme import QBNScheme
 from .utils import get_memory_usage, compute_tensor_bytes, exp_recorder
 from .autoprec import AutoPrecision
+from .autoprecf import AutoPrecisionFast
 from .autoprec_ucb import AutoPrecisionUCB

@@ -190,23 +190,36 @@ def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_
             init_mem = get_memory_usage(True)
             exp_recorder.record("data_loader", init_mem / GB - exp_recorder.val_dict['model_only'], 2)
 
-        if compare:
-            config.compress_activation = False
+        ap.before_iter()
+        prec1, prec5 = torch.zeros(1), torch.zeros(1)  # utils.accuracy(output.data, target, topk=(1, 5))
+
+        def get_grad():
             loss, output = model_and_loss(input_var, target_var)
-            loss.backward()
-            grad = []
-            for param in model_and_loss.model.model.parameters():
-                if param.grad is not None:
-                    grad.append(param.grad.detach().ravel())
-            exact_grad = torch.cat(grad, 0)
-            config.compress_activation = True
             optimizer.zero_grad()
-        else:
-            exact_grad = None
 
-        loss, output = model_and_loss(input_var, target_var)
-        prec1, prec5 = torch.zeros(1), torch.zeros(1) #utils.accuracy(output.data, target, topk=(1, 5))
+            if fp16:
+                optimizer.backward(loss)
+            elif use_amp:
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()
 
+            torch.cuda.synchronize()
+
+            if hasattr(model_and_loss.model, 'module'):
+                m = model_and_loss.model.module.model
+            else:
+                m = model_and_loss.model.model
+
+            grad = []
+            for param in m.parameters():
+                if param.grad is not None:
+                    grad.append(param.grad.ravel())
+
+            return loss, output, torch.cat(grad, 0)
+
+        loss, output, grad = get_grad()
         if torch.distributed.is_initialized():
             reduced_loss = utils.reduce_tensor(loss.data)
             #prec1 = reduce_tensor(prec1)
@@ -214,48 +227,7 @@ def get_train_step(model_and_loss, optimizer, fp16, use_amp = False, batch_size_
         else:
             reduced_loss = loss.data
 
-        if config.debug_memory_model:
-            print("========== Before Backward ===========")
-            before_backward = get_memory_usage(True)
-            act_mem = get_memory_usage() - init_mem - compute_tensor_bytes([loss, output])
-            res = "Batch size: %d\tTotal Mem: %.2f MB\tAct Mem: %.2f MB" % (
-                    len(output), before_backward / MB, act_mem / MB)
-            loss.backward()
-            optimizer.step()
-            del loss
-            print("========== After Backward ===========")
-            after_backward = get_memory_usage(True)
-            total_mem = before_backward + (after_backward - init_mem)
-            res = "Batch size: %d\tTotal Mem: %.2f MB\tAct Mem: %.2f MB" % (
-                    len(output), total_mem / MB, act_mem / MB)
-            print(res)
-            exp_recorder.record("batch_size", len(output))
-            exp_recorder.record("total", total_mem / GB, 2)
-            exp_recorder.record("activation", act_mem / GB, 2)
-            exp_recorder.dump('mem_results.tsv')
-            exit()
-
-        if fp16:
-            optimizer.backward(loss)
-        elif use_amp:
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            loss.backward()
-
-        grad = []
-        for param in model_and_loss.model.model.parameters():
-            if param.grad is not None:
-                grad.append(param.grad.detach().ravel())
-        grad = torch.cat(grad, 0)
-
-        if compare:
-            global quant_noise
-            quant_noise += ((grad - exact_grad)**2).sum()
-
-        deltas = torch.tensor([scheme.delta for scheme in schemes])
-        gsizes = torch.tensor([scheme.gsize for scheme in schemes])
-        ap.iterate(grad, deltas, gsizes)
+        ap.iterate(grad, get_grad)
 
         if optimizer_step:
             opt = optimizer.optimizer if isinstance(optimizer, FP16_Optimizer) else optimizer
@@ -507,7 +479,7 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
     L = len(groups)
 
     dims = torch.tensor(dims, dtype=torch.long)
-    ap = AutoPrecision(2, groups, dims)
+    ap = AutoPrecision(m, schemes, 2, dims, adapt_interval=10)
     # ap = AutoPrecision(8, groups, dims, adaptive=False)
 
     epoch_iter = range(start_epoch, epochs)
@@ -515,13 +487,15 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
         epoch_iter = logger.epoch_generator_wrapper(epoch_iter)
 
     for epoch in epoch_iter:
+        for l in range(L):
+            schemes[l].bits = ap.bits[l]
+
         print('Epoch ', epoch)
         if not skip_training:
             train(train_loader, model_and_loss, optimizer, lr_scheduler, fp16, logger, epoch, ap=ap, schemes=schemes, use_amp = use_amp, prof = prof, register_metrics=epoch==start_epoch, batch_size_multiplier=batch_size_multiplier)
 
         for l in range(L):
-            print(layer_names[l], ap.bits[l])
-        print(ap.C)
+            print(layer_names[l], ap.bits[l], ap.C[l])
 
         if not skip_validation:
             prec1 = validate(val_loader, model_and_loss, fp16, logger, epoch, prof = prof, register_metrics=epoch==start_epoch)
@@ -546,8 +520,8 @@ def train_loop(model_and_loss, optimizer, new_optimizer, lr_scheduler, train_loa
         # if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         #     logger.end()
         global quant_noise
-        print('Reward: ', ap.reward, 'Quant noise ', quant_noise, flush=True)
+        # print('Reward: ', ap.reward, 'Quant noise ', quant_noise, flush=True)
 
     if skip_training and skip_validation:
         # get_var_black_box(model_and_loss, optimizer, train_loader, 10)
-        test_autoprecision(model_and_loss, optimizer, train_loader, val_loader, 10)
+        test_autoprecision(model_and_loss, optimizer, train_loader, val_loader, 10, model_state)

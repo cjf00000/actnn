@@ -164,12 +164,16 @@ class PreActResNet(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
+        # x = nn.functional.dropout(x, 0.1)
 
         x = self.bn(x)
         x = self.relu(x)
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
+
+        self.feat = x
         x = self.fc(x)
+        self.pred = x
 
         return x
 

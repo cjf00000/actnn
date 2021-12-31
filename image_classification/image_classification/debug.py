@@ -196,7 +196,7 @@ def get_var_black_box(model_and_loss, optimizer, val_loader, num_batches=20):
     print('Sample Var = {}, quant_var = {}, Overall_var = {}'.format(sample_var, quant_var.sum(), overall_var.sum()))
 
 
-def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_batches=10):
+def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_batches, model_state):
     config.activation_compression_bits = [2]
     config.initial_bits = 2
     config.perlayer = False
@@ -209,15 +209,16 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_b
 
     QScheme.update_scale = False
 
-    def bp(input, target):
+    def bp(input, target, create_graph=False):
         optimizer.zero_grad()
         loss, output = model_and_loss(input, target)
-        loss.backward()
+        loss.backward(create_graph=create_graph)
         torch.cuda.synchronize()
         grad = []
         for param in m.parameters():
             if param.grad is not None:
-                grad.append(param.grad.detach().ravel().cpu())
+                # grad.append(param.grad.detach().ravel().cpu())
+                grad.append(param.grad.ravel())
 
         return loss, torch.cat(grad, 0)
 
@@ -230,16 +231,18 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_b
 
     data_iter = enumerate(val_loader)
     for i, (input, target, _) in tqdm(data_iter):
+        input = input.cuda()
+        target = target.cuda()
         break
 
-    bp(input.cuda(), target.cuda())  # Get dim
+    bp(input, target)  # Get dim
 
     gcnt = 0
     for name, module in m.named_modules():
         if hasattr(module, 'scheme') and isinstance(module.scheme, QScheme):
-            id = str(type(module)) + str(module.scheme.rank)
+            # id = str(type(module)) + str(module.scheme.rank)
             # id = str(type(module)) + str(module.scheme.rank) #+ str(name == 'conv1')
-            # id = str(np.random.rand())
+            id = str(np.random.rand())
             if not id in id2group:
                 print(id)
                 id2group[id] = gcnt
@@ -255,141 +258,29 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_b
     # exit(0)
 
     # Test AutoPrecision
-    from actnn import AutoPrecision, AutoPrecisionUCB
+    from actnn import AutoPrecision
     dims = torch.tensor(dims, dtype=torch.long)
-    ap = AutoPrecision(2, groups, dims, warmup_iters=150)
-    # ap = AutoPrecisionUCB(2, groups, dims, warmup_iters=150)
+    ap = AutoPrecision(m, schemes, 2, dims, adapt_interval=1)
+    # ap = AutoPrecisionFast(schemes, get_grad, 2, dims)
 
-    # Warmup (collect training data)
-    cnt = 0
-    for epoch in range(2):
-        data_iter = enumerate(val_loader)
-        for i, (input, target, _) in tqdm(data_iter):
-            cnt += 1
+    for l in range(L):
+        schemes[l].bits = ap.bits[l]
 
-            input = input.cuda()
-            target = target.cuda()
+    for i, (input, target, _) in tqdm(data_iter):
+        input = input.cuda()
+        target = target.cuda()
+        ap.before_iter()
+        grad = bp(input, target)[1]
+        ap.iterate(grad, lambda: bp(input, target))
 
-            for l in range(L):
-                schemes[l].bits = ap.bits[l]
-
-            print(ap.bits)
-
-            _, grad = bp(input, target)
-            deltas = torch.tensor([scheme.delta for scheme in schemes])
-            gsizes = torch.tensor([scheme.gsize for scheme in schemes])
-            ap.iterate(grad, deltas, gsizes)
-
-    # collect testing data
-    X = []
-    y = []
-    es = []
-    bits = []
-    qerrors = []    # Quantization error
-    iscales = []    # Input scale
-    losses0 = []
-    losses1 = []
-    isizes = []
-    gsizes = []
-    batch_grad = 0
-    data_iter = enumerate(val_loader)
-    cnt = 0
-    # for i, (input, target, _) in tqdm(data_iter):
-    #     cnt += 1
-    #     input = input.cuda()
-    #     target = target.cuda()
-    #     _, grad = bp(input, target)
-    #     batch_grad = batch_grad + grad
-    #
-    # batch_grad = batch_grad / cnt
-
-    # b = torch.load('b.pkl')
-    # print(b)
-    for epoch in range(0):
-        data_iter = enumerate(val_loader)
-        for l in range(L):
-            schemes[l].bits = ap.bits[l]
-            # schemes[l].bits = b[l]
-        print('bits ', ap.bits)
-        # print('bits ', b)
-        error = 0
-        cnt = 0
-        errors = []
-        qe = []
-        isz = []
-        gsz = []
-        isc = []
-        ls0 = []
-        ls1 = []
-        for i, (input, target, _) in tqdm(data_iter):
-            cnt += 1
-            input = input.cuda()
-            target = target.cuda()
-            loss0, grad = bp(input, target)
-            e = (grad - batch_grad)**2
-            error = error + e
-            errors.append(e.sum())
-            qe.append(torch.tensor([scheme.delta.item() for scheme in schemes]))
-            isc.append(torch.tensor([scheme.ref_delta.item() for scheme in schemes]))
-            isz.append(torch.tensor([scheme.isize.item() for scheme in schemes]))
-            gsz.append(torch.tensor([scheme.gsize.item() for scheme in schemes]))
-
-            # Backup parameters
-            params = [param for param in m.parameters() if param.grad is not None]
-            params_bak = [param.clone() for param in params]
-
-            with torch.no_grad():
-                # Update parameters
-                for param in params:
-                    param -= 1e-3 * param.grad
-
-                # Compute loss
-                loss1, _ = model_and_loss(input, target)
-
-                # Restore parameters
-                for param, param0 in zip(params, params_bak):
-                    param.copy_(param0)
-
-            del params_bak
-            # print(loss0.item(), loss1.item())
-            ls0.append(loss0.item())
-            ls1.append(loss1.item())
-            # for l in range(L):
-            #     print(schemes[l].delta, schemes[l].ref_delta)
-
-        error = error.sum() / cnt
-
-        bits.append(ap.bits)
-        ap.iterate(grad)
-        y.append(error)
-        es.append(errors)
-        qerrors.append(qe)
-        iscales.append(isc)
-        isizes.append(isz)
-        gsizes.append(gsz)
-        losses0.append(torch.tensor(ls0))
-        losses1.append(torch.tensor(ls1))
-
-        print('error ', error)
-
-        if epoch % 10 == 0:
-            torch.save([bits, y, es, isizes, gsizes, losses0, losses1, qerrors, iscales], 'test_set.pkl')
 
     # Compute Quant Var
     cnt = 0
     num_samples = 3
-    ap.adaptive = False
-    data_iter = enumerate(val_loader)
-    for i, (input, target, _) in tqdm(data_iter):
-        input = input.cuda()
-        target = target.cuda()
-        _, grad = bp(input, target)
-        ap.iterate(grad)
-        break
 
     for l in range(L):
         schemes[l].bits = ap.bits[l]
-        # schemes[l].bits = b[l]
+        # schemes[l].bits = 2
 
     for l in range(L):
         if 'conv' in layer_names[l] or 'fc' in layer_names[l]:
@@ -398,9 +289,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_b
         if 'bn' in layer_names[l]:
             print(layer_names[l], schemes[l].bits, ap.C[l])
 
-
-    # for l in range(L):
-    #     schemes[l].bits = 2
+    # Compute per-layer sensitivity manually
+    model_and_loss.load_model_state(model_state)
 
     for l in range(1):
         quant_var = 0
@@ -409,8 +299,8 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_b
         # schemes[l].bits = 1
         cnt = 0
 
-        for i, (input, target, _) in tqdm(data_iter):
-        # for i, (input, target, _) in data_iter:
+        # for i, (input, target, _) in tqdm(data_iter):
+        for i, (input, target, _) in data_iter:
             cnt += 1
             if cnt == num_batches:
                 break
@@ -425,44 +315,14 @@ def test_autoprecision(model_and_loss, optimizer, val_loader, test_loader, num_b
                 _, grad = bp(input, target)
                 quant_var = quant_var + ((exact_grad - grad) ** 2).sum()
                 # print(((exact_grad - grad) ** 2).sum())
-                overall_var = overall_var + (grad - batch_grad) ** 2
+                # overall_var = overall_var + (grad - batch_grad) ** 2
 
         quant_var /= (num_batches * num_samples)
         overall_var /= (num_batches * num_samples)
-        # schemes[l].bits = 8
+        # schemes[l].bits = 16
 
-        print(l, layer_names[l], quant_var.sum().item(), schemes[l].delta.item(), flush=True)
+        qvar = quant_var.sum().item()
+        delta = schemes[l].delta.item()
+        # print(l, layer_names[l], qvar, delta, qvar / (delta+1e-9), flush=True)
 
-        # print('quant_var = {}, Overall_var = {}'
-        #       .format(quant_var.sum(), overall_var.sum()))
-
-    # Calculate delta
-    for l in range(L):
-        schemes[l].bits = 12
-
-    data_iter = enumerate(val_loader)
-    for i, (input, target, _) in data_iter:
-        break
-
-    input = input.cuda()
-    target = target.cuda()
-
-    deltas = torch.zeros(L, 8)
-    for l in range(0):
-        for b in range(1, 9):
-            schemes[l].bits = b
-            bp(input, target)
-            deltas[l, b-1] = schemes[l].delta
-
-        schemes[l].bits = 12
-        print(deltas[l])
-
-    # torch.save(deltas, 'deltas.pkl')
-
-    isizes = torch.zeros(L)
-    gsizes = torch.zeros(L)
-    bp(input, target)
-    for l in range(L):
-        isizes[l] = schemes[l].isize
-        gsizes[l] = schemes[l].gsize
-    # torch.save([isizes, gsizes], 'sizes.pkl')
+        print('quant_var = {}'.format(quant_var.sum()))

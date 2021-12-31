@@ -109,13 +109,15 @@ def quantize_activation(input, scheme):
     else:
         input_groups, q_bits, q_min, mx = no_scheme_compute_quantization_bits(input)
 
+    # bin_size = (mx - q_min) / (2 ** q_bits.view(-1, 1, 1))
+    bin_size = (mx - q_min) / 4
     q_input, q_scale = quantize_and_pack(input_groups, q_bits, q_min, mx)
 
     # TODO convert q_bits to int8
     if input.dtype == torch.float32:
-        return q_input, q_bits, q_scale.to(torch.bfloat16), q_min.to(torch.bfloat16)
+        return q_input, q_bits, q_scale.to(torch.bfloat16), q_min.to(torch.bfloat16), scheme.inject_noise, bin_size, scheme
     else:
-        return q_input, q_bits, q_scale, q_min
+        return q_input, q_bits, q_scale, q_min, scheme.inject_noise, bin_size, scheme
 
 
 def dequantize_activation(quantized, q_input_shape):
@@ -125,11 +127,20 @@ def dequantize_activation(quantized, q_input_shape):
             ret = ret.cuda(non_blocking=True)
         return ret
 
-    q_input, q_bits, q_scale, q_min = quantized
+    q_input, q_bits, q_scale, q_min, inject_noise, bin_size, scheme = quantized
     if q_scale.dtype == torch.bfloat16:
         q_scale = q_scale.to(torch.float32)
         q_min = q_min.to(torch.float32)
+
     input = dequantize_and_unpack(q_input, q_input_shape, q_bits, q_scale, q_min)
+    if inject_noise:    # Save and load rng state
+        rng_state = torch.get_rng_state()
+        noise = torch.randn_like(input)
+        torch.set_rng_state(rng_state)
+        input = input + noise * bin_size
+
+    # input.requires_grad_()
+    scheme.input = input
 
     # Remove padding
     N = q_input_shape[0]
@@ -185,7 +196,7 @@ class convnd(Function):
         input = dequantize_activation(quantized, q_input_shape)
         ctx.scheme.delta = ((input - ctx.debug_input) ** 2).sum()
         ctx.scheme.ref_delta = (ctx.debug_input ** 2).sum()
-        del quantized, ctx.saved
+        # del quantized, ctx.saved
 
         empty_cache(config.empty_cache_threshold)
 
@@ -413,7 +424,7 @@ class linear(Function):
         input = dequantize_activation(quantized, q_input_shape)
         ctx.scheme.delta = ((input - ctx.debug_input)**2).sum()
         ctx.scheme.ref_delta = (ctx.debug_input ** 2).sum()
-        del quantized, ctx.saved
+        # del quantized, ctx.saved
 
         empty_cache(config.empty_cache_threshold)
 
@@ -490,7 +501,7 @@ class batch_norm(Function):
         ctx.scheme.gsize = (grad_output ** 2).sum() / ctx.scheme.dim
         ctx.scheme.delta = ((input - ctx.debug_input) ** 2).sum()
         ctx.scheme.ref_delta = (ctx.debug_input ** 2).sum()
-        del quantized, ctx.saved
+        # del quantized, ctx.saved
 
         empty_cache(config.empty_cache_threshold)
 
